@@ -171,6 +171,14 @@ def handle_sigterm(signum, frame):
     pass
 
 
+class LoadTimeout(Exception):
+    pass
+
+
+def handle_sigalrm(signum, frame):
+    raise LoadTimeout()
+
+
 # ====================================================================
 #  CLI
 # ====================================================================
@@ -223,6 +231,10 @@ parser.add_argument('--skip-list', default=None,
                     help="Path to a text file listing synset_id/obj_id entries "
                          "(one per line) to skip unconditionally, e.g. for models "
                          "that hang during loading")
+parser.add_argument('--load-timeout', type=int, default=120,
+                    help="Seconds to wait for load_shapenet before treating the "
+                         "model as a hang (default: 120, set to 0 to disable). "
+                         "Timed-out objects are auto-appended to --skip-list.")
 
 args = parser.parse_args()
 
@@ -238,6 +250,7 @@ np.random.seed(args.seed)
 
 signal.signal(signal.SIGUSR1, handle_sigusr1)
 signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGALRM, handle_sigalrm)
 
 # ====================================================================
 #  LOAD OBJECTS
@@ -323,6 +336,20 @@ set_camera_pose(cam2world, frame=0)
 os.makedirs(args.output_dir, exist_ok=True)
 pkl_path = os.path.join(args.output_dir, f'{args.metadata_name}.pkl')
 
+# Sentinel file: written just before load_shapenet, deleted on success.
+# If found at startup it means the previous run hung mid-load on that object.
+sentinel_path = os.path.join(args.output_dir, f'.loading_{args.metadata_name}')
+if os.path.exists(sentinel_path):
+    with open(sentinel_path) as _f:
+        _hung = _f.read().strip()
+    print(f"WARNING: sentinel found — previous run hung loading '{_hung}', adding to skip set")
+    skip_set.add(_hung)
+    os.remove(sentinel_path)
+    if args.skip_list:
+        with open(args.skip_list, 'a') as _f:
+            _f.write(f"{_hung}\n")
+        print(f"  Auto-appended to skip list: {args.skip_list}")
+
 if os.path.exists(pkl_path):
     with open(pkl_path, 'rb') as f:
         metadata = pickle.load(f)
@@ -366,6 +393,11 @@ first_object = True
 for (synset, obj_id), factors in jobs_by_obj.items():
     obj_count += 1
 
+    # Skip objects in the runtime skip set (sentinel catches + in-process timeouts)
+    if f"{synset}/{obj_id}" in skip_set:
+        vprint(f"[{obj_count}/{total_objects}] {synset}/{obj_id} — in skip set, skipping")
+        continue
+
     # Check if all sequences for this object are already done
     if all((synset, obj_id, seq_idx) in recorded for seq_idx in factors):
         vprint(f"[{obj_count}/{total_objects}] {synset}/{obj_id} — all seqs already recorded, skipping")
@@ -380,9 +412,42 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         vprint(f"  removed  ({time.time()-t_load:.2f}s)", flush=True)
     first_object = False
 
-    model_obj = bproc.loader.load_shapenet(
-        args.models_path, used_synset_id=synset, used_source_id=obj_id
-    )
+    # --- hang detection: sentinel + optional SIGALRM timeout ---
+    with open(sentinel_path, 'w') as _f:
+        _f.write(f"{synset}/{obj_id}")
+    if args.load_timeout:
+        signal.alarm(args.load_timeout)
+
+    try:
+        model_obj = bproc.loader.load_shapenet(
+            args.models_path, used_synset_id=synset, used_source_id=obj_id
+        )
+    except LoadTimeout:
+        signal.alarm(0)
+        print(f"  TIMEOUT: load_shapenet hung >{args.load_timeout}s on "
+              f"{synset}/{obj_id} — skipping", flush=True)
+        skip_set.add(f"{synset}/{obj_id}")
+        if args.skip_list:
+            with open(args.skip_list, 'a') as _f:
+                _f.write(f"{synset}/{obj_id}\n")
+            print(f"  Auto-appended to skip list: {args.skip_list}", flush=True)
+        # Best-effort cleanup of any partially loaded object
+        try:
+            bpy.data.objects.remove(bpy.context.visible_objects[-1], do_unlink=True)
+        except Exception:
+            pass
+        first_object = True
+        try:
+            os.remove(sentinel_path)
+        except FileNotFoundError:
+            pass
+        continue
+
+    if args.load_timeout:
+        signal.alarm(0)
+    os.remove(sentinel_path)
+    # -----------------------------------------------------------
+
     vprint(f"  load_shapenet done  ({time.time()-t_load:.2f}s)", flush=True)
 
     vprint(f"  get_bound_box ...", flush=True)
