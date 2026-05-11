@@ -179,6 +179,25 @@ def handle_sigalrm(signum, frame):
     raise LoadTimeout()
 
 
+def _skip_object(synset, obj_id, sentinel_path, skip_list_path, skip_set):
+    """Add an object to the runtime skip set, optionally persist to skip list,
+    clean up its sentinel file, and remove any partial Blender scene object."""
+    key = f"{synset}/{obj_id}"
+    skip_set.add(key)
+    if skip_list_path:
+        with open(skip_list_path, 'a') as _f:
+            _f.write(f"{key}\n")
+        print(f"  Auto-appended to skip list: {skip_list_path}", flush=True)
+    try:
+        bpy.data.objects.remove(bpy.context.visible_objects[-1], do_unlink=True)
+    except Exception:
+        pass
+    try:
+        os.remove(sentinel_path)
+    except FileNotFoundError:
+        pass
+
+
 # ====================================================================
 #  CLI
 # ====================================================================
@@ -426,21 +445,14 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         signal.alarm(0)
         print(f"  TIMEOUT: load_shapenet hung >{args.load_timeout}s on "
               f"{synset}/{obj_id} — skipping", flush=True)
-        skip_set.add(f"{synset}/{obj_id}")
-        if args.skip_list:
-            with open(args.skip_list, 'a') as _f:
-                _f.write(f"{synset}/{obj_id}\n")
-            print(f"  Auto-appended to skip list: {args.skip_list}", flush=True)
-        # Best-effort cleanup of any partially loaded object
-        try:
-            bpy.data.objects.remove(bpy.context.visible_objects[-1], do_unlink=True)
-        except Exception:
-            pass
+        _skip_object(synset, obj_id, sentinel_path, args.skip_list, skip_set)
         first_object = True
-        try:
-            os.remove(sentinel_path)
-        except FileNotFoundError:
-            pass
+        continue
+    except Exception as _e:
+        signal.alarm(0)
+        print(f"  ERROR loading {synset}/{obj_id}: {_e} — skipping", flush=True)
+        _skip_object(synset, obj_id, sentinel_path, args.skip_list, skip_set)
+        first_object = True
         continue
 
     if args.load_timeout:
@@ -463,20 +475,21 @@ for (synset, obj_id), factors in jobs_by_obj.items():
     model_obj.set_location((0, 0, 0))
     vprint(f"  set_location done  ({time.time()-t_load:.2f}s)", flush=True)
 
-    # One random base latent shared across all traversals for this object
-    base_latent = np.array([
-        np.random.uniform(lo, hi) for lo, hi in LATENT_RANGES
-    ])
-
     vprint(f"  ready  (total load: {time.time()-t_load:.2f}s)")
-    vprint(f"  base: " + "  ".join(
-        f"{LATENT_NAMES[k]}={base_latent[k]:.3f}" for k in range(N_FACTORS)
-    ))
 
     for seq_idx in factors:
         if (synset, obj_id, seq_idx) in recorded:
             vprint(f"  seq_{seq_idx:02d} — already recorded, skipping")
             continue
+
+        # Fresh deterministic base latent per sequence
+        base_rng = np.random.default_rng(_seq_seed(args.seed, synset, obj_id, 'base', seq_idx))
+        base_latent = np.array([
+            base_rng.uniform(lo, hi) for lo, hi in LATENT_RANGES
+        ])
+        vprint(f"  seq_{seq_idx:02d} base: " + "  ".join(
+            f"{LATENT_NAMES[k]}={base_latent[k]:.3f}" for k in range(N_FACTORS)
+        ))
 
         # Determine per-factor directions
         if args.multi_factor:
