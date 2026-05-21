@@ -69,7 +69,8 @@ def make_traversal(k, n_frames, use_random_offset=False,
     return np.linspace(lo, hi, n_frames)
 
 
-def sample_directions(freeze_prob, global_seed, synset, obj_id, seq_idx):
+def sample_directions(freeze_prob, global_seed, synset, obj_id, seq_idx,
+                      allowed_factors=None):
     """Sample a direction vector for a multi-factor traversal sequence.
 
     Returns an int8 array of shape [N_FACTORS] with values:
@@ -78,13 +79,19 @@ def sample_directions(freeze_prob, global_seed, synset, obj_id, seq_idx):
        0  factor is frozen at its base value
 
     Each factor independently freezes with probability freeze_prob.
-    At least one factor is guaranteed to be non-zero.
+    Factors not in allowed_factors are always forced to 0.
+    At least one allowed factor is guaranteed to be non-zero.
     """
+    if allowed_factors is None:
+        allowed_factors = set(range(N_FACTORS))
     rng = np.random.default_rng(_seq_seed(global_seed, synset, obj_id, 'dirs', seq_idx))
     while True:
         active = rng.random(N_FACTORS) >= freeze_prob          # bool[7]
         signs  = np.where(rng.random(N_FACTORS) < 0.5, 1, -1) # ±1[7]
         directions = (active * signs).astype(np.int8)
+        for k in range(N_FACTORS):
+            if k not in allowed_factors:
+                directions[k] = 0
         if np.any(directions != 0):
             return directions
 
@@ -243,6 +250,10 @@ parser.add_argument('--freeze-prob', type=float, default=0.5,
 parser.add_argument('--seqs-per-object', type=int, default=7,
                     help="[multi-factor] Number of sequences to generate per object "
                          "(default: 7, matching single-factor mode)")
+parser.add_argument('--factors', nargs='+', default=None,
+                    help="Restrict traversals to these factors only. "
+                         "Accepts names (e.g. rot_x rot_z) or indices (0 2). "
+                         "Default: all 7 factors.")
 parser.add_argument('--verbose', '-v', action='store_true', default=False,
                     help="Print per-object and per-sequence debug info including "
                          "latent values, directions, and timing")
@@ -262,6 +273,19 @@ def vprint(*a, **kw):
     if args.verbose:
         print(*a, **kw)
 
+if args.factors is not None:
+    active_factors = set()
+    for f in args.factors:
+        if f.lstrip('-').isdigit():
+            active_factors.add(int(f))
+        else:
+            if f not in LATENT_NAMES:
+                raise ValueError(f"Unknown factor name '{f}'. "
+                                 f"Valid names: {LATENT_NAMES}")
+            active_factors.add(LATENT_NAMES.index(f))
+else:
+    active_factors = set(range(N_FACTORS))
+
 if args.full_rotation:
     LATENT_RANGES[:3] = np.array([[-np.pi, np.pi]] * 3)
 
@@ -277,10 +301,6 @@ signal.signal(signal.SIGALRM, handle_sigalrm)
 items = np.load(args.objects)
 print(f"Loaded {len(items)} objects from {args.objects}")
 
-if args.max_objects is not None:
-    items = items[:args.max_objects]
-    print(f"Capped to {len(items)} objects (--max-objects)")
-
 skip_set = set()
 if args.skip_list and os.path.exists(args.skip_list):
     with open(args.skip_list) as f:
@@ -295,10 +315,17 @@ items = [item for item in items
 if skip_set:
     print(f"Objects after skip-list filter: {len(items)}")
 
-n_seqs = args.seqs_per_object if args.multi_factor else N_FACTORS
+if args.max_objects is not None:
+    items = items[:args.max_objects]
+    print(f"Capped to {len(items)} objects (--max-objects)")
+
+if args.multi_factor:
+    seq_indices = range(args.seqs_per_object)
+else:
+    seq_indices = sorted(active_factors)
 jobs = [(str(item[0]), str(item[1]), seq_idx)
         for item in items
-        for seq_idx in range(n_seqs)]
+        for seq_idx in seq_indices]
 
 if args.max_sequences is not None:
     jobs = jobs[:args.max_sequences]
@@ -308,6 +335,8 @@ print(f"Total sequences to generate: {len(jobs)}")
 vprint(f"Mode:           {'multi-factor' if args.multi_factor else 'single-factor'}")
 vprint(f"n_frames:       {args.n_frames}  |  image_size: {args.image_size}  |  render_samples: {args.render_samples}")
 vprint(f"full_rotation:  {args.full_rotation}  |  random_offset: {args.random_offset}")
+vprint(f"active_factors: {sorted(active_factors)} "
+       f"({', '.join(LATENT_NAMES[k] for k in sorted(active_factors))})")
 if args.multi_factor:
     vprint(f"freeze_prob:    {args.freeze_prob}  |  seqs_per_object: {args.seqs_per_object}")
 
@@ -477,16 +506,22 @@ for (synset, obj_id), factors in jobs_by_obj.items():
 
     vprint(f"  ready  (total load: {time.time()-t_load:.2f}s)")
 
+    # Base values for excluded factors: midpoint of range (canonical, not random)
+    fixed_base = np.array([(lo + hi) / 2 for lo, hi in LATENT_RANGES])
+
     for seq_idx in factors:
         if (synset, obj_id, seq_idx) in recorded:
             vprint(f"  seq_{seq_idx:02d} — already recorded, skipping")
             continue
 
-        # Fresh deterministic base latent per sequence
+        # Fresh deterministic base latent per sequence (active factors only)
         base_rng = np.random.default_rng(_seq_seed(args.seed, synset, obj_id, 'base', seq_idx))
         base_latent = np.array([
             base_rng.uniform(lo, hi) for lo, hi in LATENT_RANGES
         ])
+        for k in range(N_FACTORS):
+            if k not in active_factors:
+                base_latent[k] = fixed_base[k]
         vprint(f"  seq_{seq_idx:02d} base: " + "  ".join(
             f"{LATENT_NAMES[k]}={base_latent[k]:.3f}" for k in range(N_FACTORS)
         ))
@@ -494,7 +529,8 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         # Determine per-factor directions
         if args.multi_factor:
             directions = sample_directions(
-                args.freeze_prob, args.seed, synset, obj_id, seq_idx
+                args.freeze_prob, args.seed, synset, obj_id, seq_idx,
+                allowed_factors=active_factors,
             )
         else:
             # Single-factor mode: seq_idx IS the factor index
