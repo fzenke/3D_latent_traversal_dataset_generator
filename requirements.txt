@@ -1,0 +1,7 @@
+blenderproc
+numpy
+torch
+torchvision
+Pillow
+opencv-python
+matplotlib

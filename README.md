@@ -116,17 +116,40 @@ blenderproc run generate_traversals.py \
 | `--max-objects` | — | Limit number of objects (testing) |
 | `--max-sequences` | — | Limit total sequences (testing) |
 
-### Parallelising across GPUs
+### Parallel runs on a SLURM cluster
 
-Split `all_objects.npy` into per-GPU subsets and use a different `--seed` for each process to avoid identical base-latent sampling:
+**Step 1 — Split the object list**
 
 ```bash
-# GPU 0
-blenderproc run generate_traversals.py --objects subset_0.npy --seed 0 ...
-
-# GPU 1
-blenderproc run generate_traversals.py --objects subset_1.npy --seed 1 ...
+python split_objects.py \
+  --objects all_objects.npy \
+  --n-jobs 21 \
+  --output-dir splits
 ```
+
+This writes `splits/objects_000.npy` … `splits/objects_020.npy`. Each file contains a balanced subset of `(synset_id, obj_id)` pairs. To create a smaller debug dataset, add `--max-per-synset N` to keep at most N objects per category before splitting.
+
+**Step 2 — Submit the array job**
+
+Edit `submit_array.sh` to set `SHAPENET_PATH`, `OUTPUT_DIR`, `SPLITS_DIR`, and `--array=0-<n_jobs-1>`, then submit:
+
+```bash
+sbatch submit_array.sh
+```
+
+Each SLURM task renders one subset and writes its own `metadata_NNN.pkl` to `OUTPUT_DIR`. Jobs resume automatically on restart: frames already on disk are skipped, and objects that hang or fail during loading are appended to `skip-list.txt` and skipped in future runs.
+
+**Step 3 — Merge metadata**
+
+Once all array tasks have completed, merge the per-job pickle files into a single `metadata.pkl`:
+
+```bash
+python merge_metadata.py \
+  --output-dir /path/to/OUTPUT_DIR \
+  --verbose
+```
+
+The merge script validates that all partial files share the same header (latent names, ranges, frame count, image size), deduplicates any overlapping sequences, and writes the result atomically. Pass `--out-name` to use a custom output filename.
 
 The generator resumes automatically: any sequence directory that already contains the expected number of frames is skipped. The pickle is updated after each object, so a crash loses at most one object's work.
 
