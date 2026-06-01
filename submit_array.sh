@@ -36,7 +36,7 @@ blenderproc run generate_traversals.py \
   --image-size    128 \
   --velocity-stdev 1.0 \
   --random-offset \
-  --freeze-prob 0.2 --multi-factor \
+  --freeze-prob 0.5 --multi-factor \
   --skip-list skip-list.txt \
   --seed          $SLURM_ARRAY_TASK_ID \
-  --factors 1 2 3 4 5 6 7 8 9 
+  --factors 0 1 2 3 4 5 6 7 8 9 

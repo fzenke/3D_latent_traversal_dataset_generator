@@ -18,8 +18,8 @@ LATENT_NAMES = ['rot_x', 'rot_y', 'rot_z', 'floor_hue',
                 'spot_theta', 'spot_phi', 'spot_hue',
                 'trans_x', 'trans_y', 'trans_z']
 LATENT_RANGES = np.array([
-    [-np.pi / 4, np.pi / 4],  # rot_x
-    [-np.pi / 4, np.pi / 4],  # rot_y
+    [-np.pi / 6, np.pi / 6],  # rot_x
+    [-np.pi / 6, np.pi / 6],  # rot_y
     [-np.pi, np.pi],          # rot_z
     [0.0, 1.0],                # floor_hue
     [0.0, np.pi / 4],          # spot_theta
@@ -35,7 +35,7 @@ N_FACTORS = len(LATENT_NAMES)
 # Factors whose values wrap around (hue circle, azimuth angle).
 # These always use endpoint=False so the sequence tiles without duplicating
 # the boundary frame.
-CIRCULAR_FACTORS = {3, 5, 6}  # floor_hue, spot_phi, spot_hue
+CIRCULAR_FACTORS = {2, 3, 5, 6}  # floor_hue, spot_phi, spot_hue
 
 
 def _seq_seed(*parts):
