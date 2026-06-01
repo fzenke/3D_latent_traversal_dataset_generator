@@ -30,7 +30,7 @@ class TraversalDataset(Dataset):
         self.sequences = self._meta['sequences']
         self.latent_names = self._meta['latent_names']
         self.latent_ranges = torch.tensor(self._meta['latent_ranges'],
-                                          dtype=torch.float32)  # [7, 2]
+                                          dtype=torch.float32)  # [N_FACTORS, 2]
         self.n_frames = self._meta['n_frames']
         self.image_size = self._meta['image_size']
 
@@ -56,19 +56,19 @@ class TraversalDataset(Dataset):
             frame_tensors.append(self._to_tensor(img))
 
         frames = torch.stack(frame_tensors, dim=0)   # [T, C, H, W]
-        latents = torch.tensor(seq['latents'], dtype=torch.float32)       # [T, 7]
-        base_latent = torch.tensor(seq['base_latent'], dtype=torch.float32)  # [7]
+        latents = torch.tensor(seq['latents'], dtype=torch.float32)       # [T, N_FACTORS]
+        base_latent = torch.tensor(seq['base_latent'], dtype=torch.float32)  # [N_FACTORS]
 
-        directions = torch.tensor(seq['traversal_directions'], dtype=torch.int8)  # [7]
+        velocities = torch.tensor(seq['traversal_velocities'], dtype=torch.float32)  # [N_FACTORS]
 
         return {
             'frames': frames,                              # FloatTensor [T, 3, H, W]
-            'latents': latents,                            # FloatTensor [T, 7]
-            'base_latent': base_latent,                    # FloatTensor [7]
+            'latents': latents,                            # FloatTensor [T, N_FACTORS]
+            'base_latent': base_latent,                    # FloatTensor [N_FACTORS]
             'synset_id': seq['synset_id'],                 # str
             'obj_id': seq['obj_id'],                       # str
             'traversal_factors': seq['traversal_factors'],     # list[int]
-            'traversal_directions': directions,            # Int8Tensor [7]: +1/-1/0
+            'traversal_velocities': velocities,            # FloatTensor [N_FACTORS]: velocity per factor, 0 = frozen
         }
 
     # ------------------------------------------------------------------
@@ -82,7 +82,7 @@ class TraversalDataset(Dataset):
         """Return a view containing only sequences where the given factor varies.
 
         Args:
-            factor: int (0-6) or str name (e.g. 'rot_x').
+            factor: int index or str name (e.g. 'rot_x', 'trans_z').
         Returns:
             A _SubsetDataset whose sequences all include the requested factor.
             In single-factor mode this means exactly one varying factor;

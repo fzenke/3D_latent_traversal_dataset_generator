@@ -114,16 +114,21 @@ if args.verbose:
     for k, name in enumerate(latent_names):
         print(f"    [{k}] {name:12s}  {factor_counts.get(k, 0):7d} sequences")
 
-    # Direction distribution
-    dir_counts = Counter(
-        int(d)
+    # Velocity distribution (non-frozen factors)
+    active_velocities = [
+        float(v)
         for s in all_sequences
-        for d in s['traversal_directions']
-        if d != 0
-    )
-    print(f"\n  Traversal directions (non-frozen):  "
-          f"+1 (forward): {dir_counts.get(1,0)}  "
-          f"-1 (backward): {dir_counts.get(-1,0)}")
+        for v in s['traversal_velocities']
+        if v != 0.0
+    ]
+    if active_velocities:
+        vels = np.array(active_velocities)
+        n_fwd = int(np.sum(vels > 0))
+        n_bwd = int(np.sum(vels < 0))
+        print(f"\n  Traversal velocities (non-frozen):  "
+              f"forward: {n_fwd}  backward: {n_bwd}  "
+              f"mean |v|={np.mean(np.abs(vels)):.3f}  "
+              f"std |v|={np.std(np.abs(vels)):.3f}")
 
 merged = {**reference_header, 'sequences': all_sequences}
 

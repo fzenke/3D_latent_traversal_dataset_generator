@@ -15,16 +15,20 @@ import time
 #  LATENT SPACE DEFINITION
 # ====================================================================
 LATENT_NAMES = ['rot_x', 'rot_y', 'rot_z', 'floor_hue',
-                'spot_theta', 'spot_phi', 'spot_hue']
+                'spot_theta', 'spot_phi', 'spot_hue',
+                'trans_x', 'trans_y', 'trans_z']
 LATENT_RANGES = np.array([
-    [-np.pi / 2, np.pi / 2],  # rot_x
-    [-np.pi / 2, np.pi / 2],  # rot_y
-    [-np.pi / 2, np.pi / 2],  # rot_z
+    [-np.pi / 4, np.pi / 4],  # rot_x
+    [-np.pi / 4, np.pi / 4],  # rot_y
+    [-np.pi, np.pi],          # rot_z
     [0.0, 1.0],                # floor_hue
     [0.0, np.pi / 4],          # spot_theta
     [0.0, 2 * np.pi],          # spot_phi
     [0.0, 1.0],                # spot_hue
-], dtype=np.float64)           # shape [7, 2]
+    [-0.5, 0.5],               # trans_x
+    [-0.5, 0.5],               # trans_y
+    [-0.5, 0.5],               # trans_z
+], dtype=np.float64)           # shape [10, 2]
 
 N_FACTORS = len(LATENT_NAMES)
 
@@ -69,50 +73,67 @@ def make_traversal(k, n_frames, use_random_offset=False,
     return np.linspace(lo, hi, n_frames)
 
 
-def sample_directions(freeze_prob, global_seed, synset, obj_id, seq_idx,
+def sample_velocities(freeze_prob, velocity_stdev, global_seed, synset, obj_id, seq_idx,
                       allowed_factors=None):
-    """Sample a direction vector for a multi-factor traversal sequence.
+    """Sample a velocity vector for a multi-factor traversal sequence.
 
-    Returns an int8 array of shape [N_FACTORS] with values:
-      +1  factor sweeps forward (min → max)
-      -1  factor sweeps backward (max → min)
-       0  factor is frozen at its base value
+    Returns a float32 array of shape [N_FACTORS]:
+      0.0   → factor is frozen at its base value
+      ±v    → factor sweeps v * span from base_latent in that direction,
+               clipped at range boundaries (wrapped for circular factors)
 
+    When velocity_stdev == 0: active factors get ±1.0 (full range sweep).
+    When velocity_stdev > 0:  active factors get N(0, velocity_stdev).
     Each factor independently freezes with probability freeze_prob.
-    Factors not in allowed_factors are always forced to 0.
-    At least one allowed factor is guaranteed to be non-zero.
+    Factors not in allowed_factors are always 0.
+    At least one allowed factor is guaranteed non-zero.
     """
     if allowed_factors is None:
         allowed_factors = set(range(N_FACTORS))
     rng = np.random.default_rng(_seq_seed(global_seed, synset, obj_id, 'dirs', seq_idx))
     while True:
-        active = rng.random(N_FACTORS) >= freeze_prob          # bool[7]
-        signs  = np.where(rng.random(N_FACTORS) < 0.5, 1, -1) # ±1[7]
-        directions = (active * signs).astype(np.int8)
+        active = rng.random(N_FACTORS) >= freeze_prob
+        if velocity_stdev > 0:
+            raw = rng.standard_normal(N_FACTORS) * velocity_stdev
+        else:
+            raw = np.where(rng.random(N_FACTORS) < 0.5, 1.0, -1.0)
+        velocities = np.where(active, raw, 0.0).astype(np.float32)
         for k in range(N_FACTORS):
             if k not in allowed_factors:
-                directions[k] = 0
-        if np.any(directions != 0):
-            return directions
+                velocities[k] = 0.0
+        if np.any(velocities != 0.0):
+            return velocities
 
 
-def build_latents(base_latent, n_frames, directions,
-                  random_offset, global_seed, synset, obj_id):
-    """Build the [n_frames, 7] latent matrix for one sequence.
+def _elastic_bounce(values, lo, hi):
+    """Reflect values off [lo, hi] boundaries like an elastic collision."""
+    span = hi - lo
+    shifted = np.asarray(values, dtype=np.float64) - lo
+    modulo = shifted % (2 * span)
+    return lo + np.where(modulo <= span, modulo, 2 * span - modulo)
+
+
+def build_latents(base_latent, n_frames, velocities):
+    """Build the [n_frames, N_FACTORS] latent matrix for one sequence.
 
     For each factor k:
-      directions[k] == 0   → all frames use base_latent[k]
-      directions[k] == +1  → forward traversal (make_traversal output)
-      directions[k] == -1  → backward traversal (reversed)
+      velocities[k] == 0  → all frames use base_latent[k]
+      velocities[k] != 0  → linspace from base_latent[k] by velocity * span;
+                             circular factors wrap modulo span,
+                             all others reflect elastically off boundaries.
     """
     latents = np.tile(base_latent, (n_frames, 1))
-    for k, d in enumerate(directions):
-        if d == 0:
+    for k, v in enumerate(velocities):
+        if v == 0.0:
             continue
-        vals = make_traversal(k, n_frames, random_offset, global_seed, synset, obj_id)
-        if d == -1:
-            vals = vals[::-1].copy()
-        latents[:, k] = vals
+        lo, hi = LATENT_RANGES[k]
+        span = hi - lo
+        end = base_latent[k] + v * span
+        raw = np.linspace(base_latent[k], end, n_frames)
+        if k in CIRCULAR_FACTORS:
+            latents[:, k] = lo + (raw - lo) % span
+        else:
+            latents[:, k] = _elastic_bounce(raw, lo, hi)
     return latents
 
 
@@ -139,11 +160,13 @@ def spherical_to_cartesian(r, theta, phi):
 
 
 def apply_latent(latent, floor_obj, spot_light):
-    """Push a 7-element latent vector into the Blender scene."""
-    rot_x, rot_y, rot_z, floor_hue, spot_theta, spot_phi, spot_hue = latent
+    """Push a 10-element latent vector into the Blender scene."""
+    rot_x, rot_y, rot_z, floor_hue, spot_theta, spot_phi, spot_hue, \
+        trans_x, trans_y, trans_z = latent
 
-    # Object rotation (applied to bpy active object — see caller)
+    # Object rotation and translation (applied to bpy active object — see caller)
     angles = (float(rot_x), float(rot_y), float(rot_z))
+    location = (float(trans_x), float(trans_y), float(trans_z))
 
     # Floor colour
     rgb = matplotlib.colors.hsv_to_rgb((floor_hue, 0.6, 0.6))
@@ -158,7 +181,7 @@ def apply_latent(latent, floor_obj, spot_light):
     rgb = matplotlib.colors.hsv_to_rgb((spot_hue, 1.0, 0.8))
     spot_light.set_color(rgb)
 
-    return angles
+    return angles, location
 
 
 def seq_is_complete(seq_dir, n_frames):
@@ -247,6 +270,13 @@ parser.add_argument('--freeze-prob', type=float, default=0.5,
                     help="[multi-factor] Probability that any individual factor is "
                          "frozen (does not vary) in a sequence (default: 0.5). "
                          "At least one factor always varies.")
+parser.add_argument('--velocity-stdev', type=float, default=0.0,
+                    help="Standard deviation of the Gaussian from which traversal "
+                         "velocity is drawn per active factor (default: 0 = ±1, "
+                         "i.e. always one full range sweep). Values > 0 give variable "
+                         "coverage: velocity ~ N(0, stdev), so stdev=1 means one full "
+                         "range on average. Traversals start at the base latent and "
+                         "are clipped at range boundaries.")
 parser.add_argument('--seqs-per-object', type=int, default=7,
                     help="[multi-factor] Number of sequences to generate per object "
                          "(default: 7, matching single-factor mode)")
@@ -526,25 +556,28 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             f"{LATENT_NAMES[k]}={base_latent[k]:.3f}" for k in range(N_FACTORS)
         ))
 
-        # Determine per-factor directions
+        # Determine per-factor velocities
         if args.multi_factor:
-            directions = sample_directions(
-                args.freeze_prob, args.seed, synset, obj_id, seq_idx,
+            velocities = sample_velocities(
+                args.freeze_prob, args.velocity_stdev, args.seed, synset, obj_id, seq_idx,
                 allowed_factors=active_factors,
             )
         else:
             # Single-factor mode: seq_idx IS the factor index
-            directions = np.zeros(N_FACTORS, dtype=np.int8)
-            directions[seq_idx] = 1
+            velocities = np.zeros(N_FACTORS, dtype=np.float32)
+            if args.velocity_stdev > 0:
+                rng = np.random.default_rng(_seq_seed(args.seed, synset, obj_id, 'vel', seq_idx))
+                velocities[seq_idx] = float(rng.standard_normal() * args.velocity_stdev)
+            else:
+                velocities[seq_idx] = 1.0
 
-        traversal_factors = [int(k) for k in np.where(directions != 0)[0]]
+        traversal_factors = [int(k) for k in np.where(velocities != 0.0)[0]]
 
         # Sequence output directory
-        seq_rel = os.path.join('seqs', synset, obj_id[:2], obj_id, f'seq_{seq_idx:02d}')
+        seq_rel = os.path.join('seqs', synset, obj_id[:2], obj_id, f'seq_{seq_idx:04d}')
         seq_dir = os.path.join(args.output_dir, seq_rel)
 
-        latents = build_latents(base_latent, n_frames, directions,
-                                args.random_offset, args.seed, synset, obj_id)
+        latents = build_latents(base_latent, n_frames, velocities)
 
         if seq_is_complete(seq_dir, n_frames):
             print(f"  Skipping {seq_rel} — frames already on disk")
@@ -553,19 +586,20 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             factor_str = '+'.join(LATENT_NAMES[k] for k in traversal_factors)
             print(f"  Rendering {seq_rel}  (factors={factor_str})")
 
-            vprint(f"  Directions: {directions.tolist()}")
+            vprint(f"  Velocities: {[f'{v:+.3f}' for v in velocities]}")
             for k in traversal_factors:
-                d = directions[k]
+                v = velocities[k]
                 vprint(f"    {LATENT_NAMES[k]:12s}  "
                        f"{latents[0,k]:.3f} → {latents[-1,k]:.3f}  "
-                       f"({'fwd' if d > 0 else 'bwd'})")
+                       f"(v={v:+.3f})")
 
             os.makedirs(seq_dir, exist_ok=True)
             bpy_obj = bpy.context.visible_objects[-1]
             t_seq = time.time()
             for t in range(n_frames):
-                angles = apply_latent(latents[t], floor, spot)
+                angles, location = apply_latent(latents[t], floor, spot)
                 bpy_obj.rotation_euler = Euler(angles)
+                bpy_obj.location = location
 
                 data = bproc.renderer.render()
                 frame_path = os.path.join(seq_dir, f'frame_{t:04d}.jpg')
@@ -591,7 +625,7 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             'obj_id': obj_id,
             'seq_idx': seq_idx,
             'traversal_factors': traversal_factors,
-            'traversal_directions': directions,
+            'traversal_velocities': velocities,
             'base_latent': base_latent.copy(),
             'latents': latents,
             'frames_dir': seq_rel,
