@@ -79,6 +79,23 @@ Each object produces **7 sequences** (one per factor). Within a sequence, the tr
 - [BlenderProc](https://github.com/DLR-RM/BlenderProc) (`pip install blenderproc`)
 - [ShapeNet Core V2](https://shapenet.org/) (requires free registration)
 
+### Building the object list
+
+Before generating, scan your ShapeNet installation to produce `all_objects.npy`:
+
+```bash
+python build_object_list.py --models-path /path/to/ShapeNetCoreV2
+```
+
+This walks all synset directories, keeps only objects that have a valid `model_normalized.obj`, and writes `all_objects.npy` (an array of `(synset_id, obj_id)` string pairs). To restrict to specific categories, pass their synset IDs:
+
+```bash
+python build_object_list.py \
+  --models-path /path/to/ShapeNetCoreV2 \
+  --synsets 02691156 02958343 03001627 \
+  --output my_objects.npy
+```
+
 ### Full run
 
 ```bash
