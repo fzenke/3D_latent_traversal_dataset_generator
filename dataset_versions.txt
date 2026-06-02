@@ -1,0 +1,6 @@
+2026-06-01
+/tachyon/groups/gzenke/datasets/3DLT-dev_v1
+
+* Adds translation factors
+* Adds rotation in x & y but not full circle
+* Increases velocity sigma to 1.0 (from 0.3)
