@@ -4,3 +4,12 @@
 * Adds translation factors
 * Adds rotation in x & y but not full circle
 * Increases velocity sigma to 1.0 (from 0.3)
+
+2026-06-04
+/tachyon/groups/gzenke/datasets/3DLT-dev_v2
+* Only the first (10? double check) objects
+* 300 sequences per object
+
+2026-06-04
+/tachyon/groups/gzenke/datasets/3DLT-dev_v3
+* Same as version v2 but without the first two factors rot_x and rot_y.
