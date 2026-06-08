@@ -73,8 +73,8 @@ def make_traversal(k, n_frames, use_random_offset=False,
     return np.linspace(lo, hi, n_frames)
 
 
-def sample_velocities(freeze_prob, velocity_stdev, global_seed, synset, obj_id, seq_idx,
-                      allowed_factors=None):
+def sample_velocities(freeze_prob, velocity_stdev, velocity_dist, global_seed, synset, obj_id,
+                      seq_idx, allowed_factors=None):
     """Sample a velocity vector for a multi-factor traversal sequence.
 
     Returns a float32 array of shape [N_FACTORS]:
@@ -83,7 +83,8 @@ def sample_velocities(freeze_prob, velocity_stdev, global_seed, synset, obj_id, 
                clipped at range boundaries (wrapped for circular factors)
 
     When velocity_stdev == 0: active factors get ±1.0 (full range sweep).
-    When velocity_stdev > 0:  active factors get N(0, velocity_stdev).
+    When velocity_stdev > 0 and velocity_dist == 'gaussian': N(0, velocity_stdev).
+    When velocity_stdev > 0 and velocity_dist == 'uniform':  U(-velocity_stdev, +velocity_stdev).
     Each factor independently freezes with probability freeze_prob.
     Factors not in allowed_factors are always 0.
     At least one allowed factor is guaranteed non-zero.
@@ -94,7 +95,10 @@ def sample_velocities(freeze_prob, velocity_stdev, global_seed, synset, obj_id, 
     while True:
         active = rng.random(N_FACTORS) >= freeze_prob
         if velocity_stdev > 0:
-            raw = rng.standard_normal(N_FACTORS) * velocity_stdev
+            if velocity_dist == 'uniform':
+                raw = rng.uniform(-velocity_stdev, velocity_stdev, N_FACTORS)
+            else:
+                raw = rng.standard_normal(N_FACTORS) * velocity_stdev
         else:
             raw = np.where(rng.random(N_FACTORS) < 0.5, 1.0, -1.0)
         velocities = np.where(active, raw, 0.0).astype(np.float32)
@@ -271,12 +275,16 @@ parser.add_argument('--freeze-prob', type=float, default=0.5,
                          "frozen (does not vary) in a sequence (default: 0.5). "
                          "At least one factor always varies.")
 parser.add_argument('--velocity-stdev', type=float, default=0.0,
-                    help="Standard deviation of the Gaussian from which traversal "
-                         "velocity is drawn per active factor (default: 0 = ±1, "
-                         "i.e. always one full range sweep). Values > 0 give variable "
-                         "coverage: velocity ~ N(0, stdev), so stdev=1 means one full "
-                         "range on average. Traversals start at the base latent and "
-                         "are clipped at range boundaries.")
+                    help="Scale of the velocity distribution per active factor "
+                         "(default: 0 = ±1, i.e. always one full range sweep). "
+                         "For 'gaussian': velocity ~ N(0, stdev). "
+                         "For 'uniform': velocity ~ U(-stdev, +stdev). "
+                         "stdev=1 means one full range on average. "
+                         "Traversals start at the base latent and reflect at boundaries.")
+parser.add_argument('--velocity-dist', default='gaussian', choices=['gaussian', 'uniform'],
+                    help="Distribution for velocity sampling when --velocity-stdev > 0: "
+                         "'gaussian' (default) draws from N(0, velocity_stdev); "
+                         "'uniform' draws from U(-velocity_stdev, +velocity_stdev).")
 parser.add_argument('--seqs-per-object', type=int, default=7,
                     help="[multi-factor] Number of sequences to generate per object "
                          "(default: 7, matching single-factor mode)")
@@ -530,6 +538,10 @@ for (synset, obj_id), factors in jobs_by_obj.items():
     model_obj.set_origin(point=bb_center)
     vprint(f"  set_origin done  ({time.time()-t_load:.2f}s)", flush=True)
 
+    bpy.context.view_layer.objects.active = model_obj.blender_obj
+    model_obj.blender_obj.select_set(True)
+    bpy.ops.object.shade_smooth_by_angle(angle=np.radians(30))
+
     vprint(f"  set_location ...", flush=True)
     model_obj.set_location((0, 0, 0))
     vprint(f"  set_location done  ({time.time()-t_load:.2f}s)", flush=True)
@@ -559,7 +571,8 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         # Determine per-factor velocities
         if args.multi_factor:
             velocities = sample_velocities(
-                args.freeze_prob, args.velocity_stdev, args.seed, synset, obj_id, seq_idx,
+                args.freeze_prob, args.velocity_stdev, args.velocity_dist,
+                args.seed, synset, obj_id, seq_idx,
                 allowed_factors=active_factors,
             )
         else:
@@ -567,7 +580,10 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             velocities = np.zeros(N_FACTORS, dtype=np.float32)
             if args.velocity_stdev > 0:
                 rng = np.random.default_rng(_seq_seed(args.seed, synset, obj_id, 'vel', seq_idx))
-                velocities[seq_idx] = float(rng.standard_normal() * args.velocity_stdev)
+                if args.velocity_dist == 'uniform':
+                    velocities[seq_idx] = float(rng.uniform(-args.velocity_stdev, args.velocity_stdev))
+                else:
+                    velocities[seq_idx] = float(rng.standard_normal() * args.velocity_stdev)
             else:
                 velocities[seq_idx] = 1.0
 

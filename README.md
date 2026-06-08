@@ -132,6 +132,7 @@ blenderproc run generate_traversals.py \
 | `--seed` | `0` | RNG seed for base latent sampling |
 | `--max-objects` | — | Limit number of objects (testing) |
 | `--max-sequences` | — | Limit total sequences (testing) |
+| `--velocity-dist` | `gaussian` | Distribution for velocity sampling: `gaussian` or `uniform` (half-width = `--velocity-stdev`) |
 
 ### Parallel runs on a SLURM cluster
 

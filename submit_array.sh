@@ -1,18 +1,20 @@
 #!/bin/bash
 #SBATCH --account=surrgrad                    # Currently Zen Lab is running everything under this account
-#SBATCH --partition=several                   # for CPU only change this, e.g. to cpu_short, see also sinfo command output
+#SBATCH --partition=several                      # for CPU only change this, e.g. to cpu_short, see also sinfo command output
 #SBATCH --job-name=traversal
-#SBATCH --array=0-1            # set to n_jobs - 1
+#SBATCH --array=0-4            # set to n_jobs - 1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%A_%a.out
 #SBATCH --signal=USR1@60        # send SIGUSR1 60s before timeout for clean requeue
 #SBATCH --output=logs/job-%j.out
+#   //// SBATCH --exclude=pcl1004
+#   //// SBATCH --nodelist=pcl1003
 
 # ---- configure these paths before submitting ----
 SHAPENET_PATH=/tachyon/groups/gzenke/datasets/ShapeNetCoreV2 
-OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT-dev_v1
+OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT/dev_v5
 SPLITS_DIR=splits_debug            # directory produced by split_objects.py
 # -------------------------------------------------
 
@@ -32,11 +34,19 @@ blenderproc run generate_traversals.py \
   --metadata-name "metadata_${TASK_ID}" \
   --n-frames      32 \
   --render-samples 50 \
-  --seqs-per-object 50 \
+  --seqs-per-object 150 \
   --image-size    128 \
-  --velocity-stdev 1.0 \
+  --velocity-stdev 0.5 \
+  --velocity-dist uniform \
   --random-offset \
   --freeze-prob 0.5 --multi-factor \
   --skip-list skip-list.txt \
-  --seed          $SLURM_ARRAY_TASK_ID \
-  --factors 0 1 2 3 4 5 6 7 8 9 
+  --seed    $SLURM_ARRAY_TASK_ID \
+  --factors 2 7 8 9 
+
+
+
+## Misc info 
+# LATENT_NAMES = ['rot_x', 'rot_y', 'rot_z', 'floor_hue',
+#                 'spot_theta', 'spot_phi', 'spot_hue',
+#                 'trans_x', 'trans_y', 'trans_z']
