@@ -33,6 +33,7 @@ class TraversalDataset(Dataset):
                                           dtype=torch.float32)  # [N_FACTORS, 2]
         self.n_frames = self._meta['n_frames']
         self.image_size = self._meta['image_size']
+        self.configs = self._meta.get('configs', [])   # list of per-job config dicts
 
         if transform is None:
             from torchvision.transforms.functional import to_tensor

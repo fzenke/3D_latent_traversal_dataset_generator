@@ -35,6 +35,7 @@ print(f"Found {len(partial_paths)} partial pickle(s)")
 header_keys = ('latent_names', 'latent_ranges', 'n_frames', 'image_size')
 reference_header = None
 all_sequences = []
+all_configs = []
 seen = {}  # (synset_id, obj_id, seq_idx) -> source file
 
 for path in partial_paths:
@@ -63,6 +64,9 @@ for path in partial_paths:
                     f"Header mismatch for '{k}' in {path}: "
                     f"expected {ref_val}, got {val}"
                 )
+
+    if 'config' in part:
+        all_configs.append(part['config'])
 
     n_seqs = len(part['sequences'])
     n_objs = len({(s['synset_id'], s['obj_id']) for s in part['sequences']})
@@ -130,7 +134,7 @@ if args.verbose:
               f"mean |v|={np.mean(np.abs(vels)):.3f}  "
               f"std |v|={np.std(np.abs(vels)):.3f}")
 
-merged = {**reference_header, 'sequences': all_sequences}
+merged = {**reference_header, 'configs': all_configs, 'sequences': all_sequences}
 
 out_path = os.path.join(args.output_dir, f'{args.out_name}.pkl')
 tmp_path = out_path + '.tmp'

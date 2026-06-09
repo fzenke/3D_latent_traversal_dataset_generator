@@ -14,7 +14,7 @@
 
 # ---- configure these paths before submitting ----
 SHAPENET_PATH=/tachyon/groups/gzenke/datasets/ShapeNetCoreV2 
-OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT/dev_v5
+OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT/dev_v6
 SPLITS_DIR=splits_debug            # directory produced by split_objects.py
 # -------------------------------------------------
 
@@ -42,7 +42,7 @@ blenderproc run generate_traversals.py \
   --freeze-prob 0.5 --multi-factor \
   --skip-list skip-list.txt \
   --seed    $SLURM_ARRAY_TASK_ID \
-  --factors 2 7 8 9 
+  --factors 2 3 4 5 6 7 8 9 
 
 
 
