@@ -1,11 +1,15 @@
 import blenderproc as bproc
+import sys
+import os
+# Ensure the directory containing this script is on sys.path so that
+# latent_utils.py (a sibling module) can be found when BlenderProc runs us.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import argparse
 import bpy
 from mathutils import Matrix, Euler
 import numpy as np
 import cv2
 import matplotlib
-import os
 import pickle
 import signal
 import time

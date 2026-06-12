@@ -2,7 +2,7 @@
 #SBATCH --account=surrgrad                    # Currently Zen Lab is running everything under this account
 #SBATCH --partition=several                      # for CPU only change this, e.g. to cpu_short, see also sinfo command output
 #SBATCH --job-name=traversal
-#SBATCH --array=0-4            # set to n_jobs - 1
+#SBATCH --array=0-11                              # set to n_jobs - 1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=24:00:00
@@ -14,8 +14,8 @@
 
 # ---- configure these paths before submitting ----
 SHAPENET_PATH=/tachyon/groups/gzenke/datasets/ShapeNetCoreV2 
-OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT/dev_v6
-SPLITS_DIR=splits_debug            # directory produced by split_objects.py
+OUTPUT_DIR=/tachyon/groups/gzenke/datasets/3DLT/dev_v8
+SPLITS_DIR=splits_dev       # directory produced by split_objects.py
 # -------------------------------------------------
 
 mkdir -p logs
@@ -34,9 +34,9 @@ blenderproc run generate_traversals.py \
   --metadata-name "metadata_${TASK_ID}" \
   --n-frames      32 \
   --render-samples 50 \
-  --seqs-per-object 150 \
+  --seqs-per-object 1000 \
   --image-size    128 \
-  --velocity-stdev 0.5 \
+  --velocity-stdev 1.0 \
   --velocity-dist uniform \
   --random-offset \
   --freeze-prob 0.5 --multi-factor \
