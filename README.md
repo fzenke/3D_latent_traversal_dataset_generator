@@ -1,9 +1,10 @@
 
 # 3D Latent Traversal Dataset Generator
 
+Generates latent traversals of 3D objects for studying **invariance and equivariance** in predictive self-supervised learning. Instead of sampling random latents per image, this generator produces *sequences* in which one or more latent factors sweep across their range while others are held fixed. This strategy enables controlled studies of what a model learns to be invariant or equivariant to.
+
 > This code is based on the [3DIEBench](https://github.com/facebookresearch/SIE) dataset generator by Garrido et al. (Meta AI), originally released under the GPL v3.0 License.
 
-Generates latent traversals of 3D objects for studying **invariance and equivariance** in predictive self-supervised learning. Instead of sampling random latents per image, this generator produces *sequences* in which one or more latent factors sweep across their range while others are held fixed. This strategy enables controlled studies of what a model learns to be invariant or equivariant to.
 
 Built on [BlenderProc](https://github.com/DLR-RM/BlenderProc) and [ShapeNet Core V2](https://shapenet.org/).
 
