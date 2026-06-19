@@ -67,6 +67,23 @@ def apply_latent(latent, floor_obj, spot_light):
     return angles, location
 
 
+def _draw_latent_overlay(img_bgr, latents_t, traversal_factors):
+    """Return a copy of img_bgr with per-frame latent values rendered as semi-transparent text.
+
+    Varying factors are drawn in cyan; frozen factors in light grey.
+    """
+    overlay = img_bgr.copy()
+    h = img_bgr.shape[0]
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.28, h / 900)
+    line_h     = max(1, int(h / (N_FACTORS + 2)))
+    for k, (name, val) in enumerate(zip(LATENT_NAMES, latents_t)):
+        color  = (0, 230, 230) if k in traversal_factors else (160, 160, 160)
+        cv2.putText(overlay, f"{name}: {val:.3f}", (4, line_h * (k + 1)),
+                    font, font_scale, color, 1, cv2.LINE_AA)
+    return cv2.addWeighted(overlay, 0.75, img_bgr, 0.25, 0)
+
+
 def seq_is_complete(seq_dir, n_frames):
     """True iff seq_dir exists and contains exactly n_frames JPEGs."""
     if not os.path.isdir(seq_dir):
@@ -182,6 +199,10 @@ parser.add_argument('--load-timeout', type=int, default=120,
                     help="Seconds to wait for load_shapenet before treating the "
                          "model as a hang (default: 120, set to 0 to disable). "
                          "Timed-out objects are auto-appended to --skip-list.")
+parser.add_argument('--debug-overlay', action='store_true', default=False,
+                    help="Burn per-frame latent values onto each saved image for "
+                         "visual inspection. Varying factors are shown in cyan, "
+                         "frozen factors in grey.")
 
 args = parser.parse_args()
 
@@ -431,9 +452,20 @@ for (synset, obj_id), factors in jobs_by_obj.items():
     model_obj.set_origin(point=bb_center)
     vprint(f"  set_origin done  ({time.time()-t_load:.2f}s)", flush=True)
 
-    bpy.context.view_layer.objects.active = model_obj.blender_obj
-    model_obj.blender_obj.select_set(True)
-    bpy.ops.object.shade_smooth_by_angle(angle=np.radians(30))
+    # Apply smooth shading to every mesh object loaded from ShapeNet.
+    # ShapeNet OBJ files embed explicit vertex normals (vn) which Blender stores
+    # as custom split normals; these silently override any smooth/flat setting and
+    # must be cleared so Blender recomputes normals from the geometry.
+    for obj in bpy.context.scene.objects:
+        if obj.type != 'MESH':
+            continue
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.shade_smooth_by_angle(angle=np.radians(60))
+        obj.select_set(False)
 
     vprint(f"  set_location ...", flush=True)
     model_obj.set_location((0, 0, 0))
@@ -512,7 +544,10 @@ for (synset, obj_id), factors in jobs_by_obj.items():
 
                 data = bproc.renderer.render()
                 frame_path = os.path.join(seq_dir, f'frame_{t:04d}.jpg')
-                cv2.imwrite(frame_path, data["colors"][0])
+                frame_img = data["colors"][0]
+                if args.debug_overlay:
+                    frame_img = _draw_latent_overlay(frame_img, latents[t], traversal_factors)
+                cv2.imwrite(frame_path, frame_img)
                 frames_rendered += 1
 
             seq_elapsed = time.time() - t_seq
