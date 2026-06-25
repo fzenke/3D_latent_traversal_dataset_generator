@@ -224,6 +224,64 @@ The generator resumes automatically: any sequence directory that already contain
 
 ---
 
+## Packaging as WebDataset
+
+For large datasets on NFS or other network-mounted storage, packing into
+[WebDataset](https://github.com/webdataset/webdataset) tar shards avoids the
+small-files bottleneck and enables streaming directly from object storage.
+
+### Pack shards
+
+```bash
+pip install webdataset
+
+python package_wds.py \
+  --dataset-dir ./3D_latent_traversal \
+  --output-dir  ./3D_latent_traversal_wds \
+  --shard-maxcount 512
+```
+
+Each shard is a plain tar file. One WebDataset *sample* = one full sequence:
+T JPEG frames stored as raw bytes (no re-encode), numpy arrays for latents,
+and a JSON metadata blob. A `dataset_info.json` is written alongside the
+shards so the loader is self-contained (no `metadata.pkl` needed).
+
+Pass `--split train` to prefix shard names (e.g. `train-shard-00000.tar`).
+
+### Load in PyTorch
+
+```python
+from wds_dataset import TraversalWebDataset, make_loader
+
+ds     = TraversalWebDataset("./shards/shard-{00000..00020}.tar")
+loader = make_loader(ds, batch_size=16, num_workers=4)
+
+for batch in loader:
+    # batch['frames']               FloatTensor [B, T, 3, H, W]
+    # batch['latents']              FloatTensor [B, T, 10]
+    # batch['base_latent']          FloatTensor [B, 10]
+    # batch['traversal_velocities'] FloatTensor [B, 10]
+    # batch['synset_id']            list[str]
+    # batch['obj_id']               list[str]
+    # batch['traversal_factors']    list[list[int]]
+    ...
+
+# Filter helpers (return new wds pipelines)
+rot_seqs  = ds.filter_by_factor('rot_x')   # or filter_by_factor(0)
+airplanes = ds.filter_by_synset('02691156')
+```
+
+A custom per-frame `transform` (callable `[3, H, W] → [3, H, W]`) can be
+passed to `TraversalWebDataset(urls, transform=...)`.
+
+Smoke-test a shard directory:
+
+```bash
+python wds_dataset.py --shards "./shards/shard-*.tar" --n-batches 3
+```
+
+---
+
 ## Loading in PyTorch
 
 ```python
