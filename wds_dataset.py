@@ -70,6 +70,35 @@ def _build_sequence(decoded: dict) -> dict:
     }
 
 
+def _filter_shards_by_split(urls, split: str = None):
+    """Filter shards according to the train/val/test split convention."""
+    if split is None:
+        return urls
+
+    if isinstance(urls, str):
+        urls = [urls]
+
+    def is_train_shard(path):
+        return os.path.basename(path).startswith("train_shard_")
+    
+    def is_val_shard(path):
+        return os.path.basename(path).startswith("val_shard_")
+    
+    def is_test_shard(path):
+        return os.path.basename(path).startswith("test_shard_")
+
+    if split == "train":
+        filtered = [url for url in urls if is_train_shard(url)]
+    elif split == "val":
+        filtered = [url for url in urls if is_val_shard(url)]
+    else:
+        filtered = [url for url in urls if is_test_shard(url)]
+
+    if not filtered:
+        raise FileNotFoundError(f"No shard files matched split='{split}'")
+    return filtered
+
+
 # ── picklable callables for use in worker processes ───────────────────────────
 
 class _SampleProcessor:
@@ -156,6 +185,7 @@ class TraversalWebDataset:
                        the parent directory of the URL pattern when omitted.
         transform:     Optional callable applied to each frame tensor
                        [3, H, W] → [3, H, W] before stacking.
+        split:         Optional shard split selector.
         shuffle:       In-epoch sample shuffle buffer size (0 = no shuffle).
         shardshuffle:  If True, shard order is shuffled between epochs.
     """
@@ -165,6 +195,7 @@ class TraversalWebDataset:
         urls,
         info_dir: str = None,
         transform=None,
+        split: str = None,
         shuffle: int = 1000,
         shardshuffle: int = 10,
     ):
@@ -177,6 +208,9 @@ class TraversalWebDataset:
             self._urls = expanded
         else:
             self._urls = urls
+
+        self.split = split
+        self._urls = _filter_shards_by_split(self._urls, split=split)
 
         self._transform    = transform
         self._shuffle      = shuffle
