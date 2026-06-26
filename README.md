@@ -248,6 +248,20 @@ shards so the loader is self-contained (no `metadata.pkl` needed).
 
 Pass `--split train` to prefix shard names (e.g. `train-shard-00000.tar`).
 
+**To produce a train/val split**, pass `--val-fraction`:
+
+```bash
+python package_wds.py \
+  --dataset-dir ./3D_latent_traversal \
+  --output-dir  ./3D_latent_traversal_wds \
+  --val-fraction 0.1 \
+  --split-seed 42
+```
+
+This writes to `output-dir/train/` and `output-dir/val/`, each containing
+its own shards and `dataset_info.json`. The split is a random shuffle of
+sequences (not objects) using `--split-seed` for reproducibility.
+
 ### Load in PyTorch
 
 ```python
