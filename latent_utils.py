@@ -112,25 +112,56 @@ def _elastic_bounce(values, lo, hi):
     return lo + np.where(modulo <= span, modulo, 2 * span - modulo)
 
 
-def build_latents(base_latent, n_frames, velocities):
+def build_latents(base_latent, n_frames, velocities,
+                  velocity_momentum=1.0, rng=None):
     """Build the [n_frames, N_FACTORS] latent matrix for one sequence.
 
     For each factor k:
-      velocities[k] == 0  → all frames use base_latent[k]
+      velocities[k] == 0  → all frames use base_latent[k]  (unless walk is on)
       velocities[k] != 0  → linspace from base_latent[k] by velocity * span;
                              circular factors wrap modulo span,
                              all others reflect elastically off boundaries.
+
+    When velocity_momentum < 1.0 and rng is not None, velocities evolve each
+    frame via an AR(1) random walk:
+
+        v_t = momentum · v_{t-1}  +  √(1 − momentum²) · ε_t,   ε_t ~ N(0, 1)
+
+    Noise scale is 1.0 (in velocity units), so frozen factors (v₀=0) can drift.
+    Position is integrated step-by-step; boundaries are handled identically to
+    the constant-velocity case.  momentum=1.0 (default) recovers the original
+    linear behaviour exactly.
     """
     latents = np.tile(base_latent, (n_frames, 1))
-    for k, v in enumerate(velocities):
-        if v == 0.0:
-            continue
-        lo, hi = LATENT_RANGES[k]
-        span = hi - lo
-        end = base_latent[k] + v * span
-        raw = np.linspace(base_latent[k], end, n_frames)
-        if k in CIRCULAR_FACTORS:
-            latents[:, k] = lo + (raw - lo) % span
-        else:
-            latents[:, k] = _elastic_bounce(raw, lo, hi)
+    use_walk = (velocity_momentum < 1.0) and (rng is not None)
+
+    if use_walk:
+        noise_scale = np.sqrt(1.0 - velocity_momentum ** 2)
+        step_frac = 1.0 / max(n_frames - 1, 1)   # one velocity unit = full span
+        for k, v0 in enumerate(velocities):
+            lo, hi = LATENT_RANGES[k]
+            span = hi - lo
+            v = float(v0)
+            x = float(base_latent[k])
+            traj = np.empty(n_frames)
+            for t in range(n_frames):
+                traj[t] = x
+                v = velocity_momentum * v + noise_scale * float(rng.standard_normal())
+                x += v * span * step_frac
+            if k in CIRCULAR_FACTORS:
+                latents[:, k] = lo + (traj - lo) % span
+            else:
+                latents[:, k] = _elastic_bounce(traj, lo, hi)
+    else:
+        for k, v in enumerate(velocities):
+            if v == 0.0:
+                continue
+            lo, hi = LATENT_RANGES[k]
+            span = hi - lo
+            end = base_latent[k] + v * span
+            raw = np.linspace(base_latent[k], end, n_frames)
+            if k in CIRCULAR_FACTORS:
+                latents[:, k] = lo + (raw - lo) % span
+            else:
+                latents[:, k] = _elastic_bounce(raw, lo, hi)
     return latents

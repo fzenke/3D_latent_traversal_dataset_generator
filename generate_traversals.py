@@ -181,6 +181,11 @@ parser.add_argument('--velocity-dist', default='gaussian', choices=['gaussian', 
                     help="Distribution for velocity sampling when --velocity-stdev > 0: "
                          "'gaussian' (default) draws from N(0, velocity_stdev); "
                          "'uniform' draws from U(-velocity_stdev, +velocity_stdev).")
+parser.add_argument('--velocity-momentum', type=float, default=1.0,
+                    help="AR(1) momentum for per-frame velocity drift in [0, 1] "
+                         "(default: 1.0 = constant velocity, current behaviour). "
+                         "Values < 1 slowly change velocities over the sequence; "
+                         "frozen factors (v=0) can also drift when momentum < 1.")
 parser.add_argument('--seqs-per-object', type=int, default=7,
                     help="[multi-factor] Number of sequences to generate per object "
                          "(default: 7, matching single-factor mode)")
@@ -354,8 +359,9 @@ else:
             'multi_factor':    args.multi_factor,
             'freeze_prob':     args.freeze_prob,
             'seqs_per_object': args.seqs_per_object,
-            'velocity_stdev':  args.velocity_stdev,
-            'velocity_dist':   args.velocity_dist,
+            'velocity_stdev':    args.velocity_stdev,
+            'velocity_dist':     args.velocity_dist,
+            'velocity_momentum': args.velocity_momentum,
             'active_factors':  sorted(active_factors),
             'random_offset':   args.random_offset,
             'full_rotation':   args.full_rotation,
@@ -518,7 +524,13 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         seq_rel = os.path.join('seqs', synset, obj_id[:2], obj_id, f'seq_{seq_idx:04d}')
         seq_dir = os.path.join(args.output_dir, seq_rel)
 
-        latents = build_latents(base_latent, n_frames, velocities)
+        walk_rng = (
+            np.random.default_rng(_seq_seed(args.seed, synset, obj_id, 'walk', seq_idx))
+            if args.velocity_momentum < 1.0 else None
+        )
+        latents = build_latents(base_latent, n_frames, velocities,
+                                velocity_momentum=args.velocity_momentum,
+                                rng=walk_rng)
 
         if seq_is_complete(seq_dir, n_frames):
             print(f"  Skipping {seq_rel} — frames already on disk")
