@@ -13,15 +13,17 @@ Usage (no split):
         --output-dir  ./3D_latent_traversal_wds \\
         --shard-maxcount 512
 
-Usage (train/val split):
+Usage (train / val / test split):
     python package_wds.py \\
         --dataset-dir ./3D_latent_traversal \\
         --output-dir  ./3D_latent_traversal_wds \\
         --val-fraction 0.1 \\
+        --test-fraction 0.1 \\
         --split-seed 42
 
-With --val-fraction > 0 the script writes to output-dir/train/ and
-output-dir/val/, each containing its own shards and dataset_info.json.
+When any fraction > 0, the script writes to subdirectories (train/, val/,
+test/) each with their own shards and dataset_info.json.  Only subdirectories
+that receive at least one sequence are created.
 The split is a random shuffle of sequences (not objects).
 """
 
@@ -122,16 +124,22 @@ def main():
                              "e.g. 'train' produces train-shard-%%05d.tar")
     parser.add_argument("--val-fraction", type=float, default=0.0,
                         help="Fraction of sequences held out for validation "
-                             "(default: 0 = no split).  Writes to output-dir/train/ "
-                             "and output-dir/val/ when > 0.")
+                             "(default: 0).  Writes to output-dir/val/ when > 0.")
+    parser.add_argument("--test-fraction", type=float, default=0.0,
+                        help="Fraction of sequences held out for testing "
+                             "(default: 0).  Writes to output-dir/test/ when > 0.")
     parser.add_argument("--split-seed", type=int, default=0,
-                        help="RNG seed for the train/val shuffle (default: 0)")
+                        help="RNG seed for the split shuffle (default: 0)")
     parser.add_argument("--verbose", "-v", action="store_true", default=False,
                         help="Print progress every 100 sequences")
     args = parser.parse_args()
 
     if not 0.0 <= args.val_fraction < 1.0:
         sys.exit("ERROR: --val-fraction must be in [0, 1)")
+    if not 0.0 <= args.test_fraction < 1.0:
+        sys.exit("ERROR: --test-fraction must be in [0, 1)")
+    if args.val_fraction + args.test_fraction >= 1.0:
+        sys.exit("ERROR: --val-fraction + --test-fraction must be < 1")
 
     pkl_path = os.path.join(args.dataset_dir, "metadata.pkl")
     if not os.path.isfile(pkl_path):
@@ -154,40 +162,55 @@ def main():
 
     sequences = list(meta["sequences"])
     n_frames  = meta["n_frames"]
+    n_total   = len(sequences)
 
-    if args.val_fraction > 0.0:
-        # ── train / val split ─────────────────────────────────────────────────
+    do_split = args.val_fraction > 0.0 or args.test_fraction > 0.0
+
+    if do_split:
         rng = random.Random(args.split_seed)
         shuffled = sequences[:]
         rng.shuffle(shuffled)
-        n_val   = max(1, round(len(shuffled) * args.val_fraction))
-        n_train = len(shuffled) - n_val
+
+        n_test  = max(1, round(n_total * args.test_fraction)) if args.test_fraction > 0 else 0
+        n_val   = max(1, round(n_total * args.val_fraction))  if args.val_fraction  > 0 else 0
+        n_train = n_total - n_val - n_test
+
+        if n_train <= 0:
+            sys.exit("ERROR: no sequences left for training after val/test split")
+
         train_seqs = shuffled[:n_train]
-        val_seqs   = shuffled[n_train:]
+        val_seqs   = shuffled[n_train : n_train + n_val]
+        test_seqs  = shuffled[n_train + n_val :]
 
-        print(f"Train/val split (seed={args.split_seed}):")
+        print(f"Split summary (seed={args.split_seed}):")
         print(f"  train: {len(train_seqs)} sequences")
-        print(f"  val:   {len(val_seqs)} sequences")
+        if val_seqs:
+            print(f"  val:   {len(val_seqs)} sequences")
+        if test_seqs:
+            print(f"  test:  {len(test_seqs)} sequences")
 
-        train_dir = os.path.join(args.output_dir, "train")
-        val_dir   = os.path.join(args.output_dir, "val")
+        splits = [("train", train_seqs)]
+        if val_seqs:
+            splits.append(("val", val_seqs))
+        if test_seqs:
+            splits.append(("test", test_seqs))
 
-        n_train_written = _write_split(
-            train_seqs, train_dir, info_base, args.dataset_dir, n_frames,
-            args.shard_pattern, args.split, args.shard_maxcount, args.verbose,
-        )
-        n_val_written = _write_split(
-            val_seqs, val_dir, info_base, args.dataset_dir, n_frames,
-            args.shard_pattern, args.split, args.shard_maxcount, args.verbose,
-        )
+        totals = []
+        for name, seqs in splits:
+            n = _write_split(
+                seqs, os.path.join(args.output_dir, name),
+                info_base, args.dataset_dir, n_frames,
+                args.shard_pattern, args.split, args.shard_maxcount, args.verbose,
+            )
+            totals.append(f"{n} {name}")
 
-        print(f"\nDone.  {n_train_written} train + {n_val_written} val sequences "
-              f"written to {args.output_dir}")
+        print(f"\nDone.  {' + '.join(totals)} sequences written to {args.output_dir}")
+
     else:
         # ── no split — original behaviour ─────────────────────────────────────
         os.makedirs(args.output_dir, exist_ok=True)
 
-        info_base["n_sequences"] = len(sequences)
+        info_base["n_sequences"] = n_total
         info_path = os.path.join(args.output_dir, "dataset_info.json")
         with open(info_path, "w") as fh:
             json.dump(info_base, fh, indent=2)

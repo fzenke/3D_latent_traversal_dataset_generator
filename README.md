@@ -175,6 +175,7 @@ blenderproc run generate_traversals.py \
 | `--freeze-prob` | `0.5` | Per-factor freeze probability in multi-factor mode |
 | `--velocity-stdev` | `0.0` | Velocity std dev (0 = full-range ±1 sweep) |
 | `--velocity-dist` | `gaussian` | Velocity distribution: `gaussian` or `uniform` (half-width = `--velocity-stdev`) |
+| `--velocity-momentum` | `1.0` | AR(1) momentum for per-frame velocity drift (1.0 = constant; < 1 = slowly drifting; frozen factors can also drift) |
 | `--full-rotation` | off | Expand all rotation ranges to [−π, π] |
 | `--random-offset` | off | Start traversals at a random phase instead of range minimum |
 | `--max-objects` | — | Limit number of objects processed (testing) |
@@ -248,19 +249,18 @@ shards so the loader is self-contained (no `metadata.pkl` needed).
 
 Pass `--split train` to prefix shard names (e.g. `train-shard-00000.tar`).
 
-**To produce a train/val split**, pass `--val-fraction`:
+**To produce a train / val / test split**, pass any combination of `--val-fraction` and `--test-fraction`:
 
 ```bash
 python package_wds.py \
   --dataset-dir ./3D_latent_traversal \
   --output-dir  ./3D_latent_traversal_wds \
   --val-fraction 0.1 \
+  --test-fraction 0.1 \
   --split-seed 42
 ```
 
-This writes to `output-dir/train/` and `output-dir/val/`, each containing
-its own shards and `dataset_info.json`. The split is a random shuffle of
-sequences (not objects) using `--split-seed` for reproducibility.
+Only the subdirectories that receive sequences are created (`train/`, `val/`, `test/`). Each contains its own shards and `dataset_info.json`. The split is a random shuffle of sequences using `--split-seed` for reproducibility. Constraint: `val-fraction + test-fraction < 1`.
 
 ### Load in PyTorch
 
