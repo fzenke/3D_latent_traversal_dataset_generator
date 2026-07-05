@@ -164,12 +164,14 @@ def main():
     n_frames  = meta["n_frames"]
     n_total   = len(sequences)
 
+    # Always shuffle so shard contents are not grouped by object.
+    rng = random.Random(args.split_seed)
+    rng.shuffle(sequences)
+
     do_split = args.val_fraction > 0.0 or args.test_fraction > 0.0
 
     if do_split:
-        rng = random.Random(args.split_seed)
-        shuffled = sequences[:]
-        rng.shuffle(shuffled)
+        shuffled = sequences
 
         n_test  = max(1, round(n_total * args.test_fraction)) if args.test_fraction > 0 else 0
         n_val   = max(1, round(n_total * args.val_fraction))  if args.val_fraction  > 0 else 0
