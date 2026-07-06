@@ -150,10 +150,11 @@ def main():
 
     # ── base info dict (n_sequences filled in per split) ─────────────────────
     info_base: dict = {
-        "latent_names":  meta["latent_names"],
-        "latent_ranges": np.array(meta["latent_ranges"]).tolist(),
-        "n_frames":      meta["n_frames"],
-        "image_size":    meta["image_size"],
+        "latent_names":       meta["latent_names"],
+        "latent_ranges":      np.array(meta["latent_ranges"]).tolist(),
+        "n_frames":           meta["n_frames"],
+        "image_size":         meta["image_size"],
+        "unique_synset_ids":  sorted(set(s["synset_id"] for s in sequences)),
     }
     if "config" in meta:
         info_base["config"] = meta["config"]
