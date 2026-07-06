@@ -148,6 +148,14 @@ def main():
     with open(pkl_path, "rb") as fh:
         meta = pickle.load(fh)
 
+    sequences = list(meta["sequences"])
+    n_frames  = meta["n_frames"]
+    n_total   = len(sequences)
+
+    # Always shuffle so shard contents are not grouped by object.
+    rng = random.Random(args.split_seed)
+    rng.shuffle(sequences)
+
     # ── base info dict (n_sequences filled in per split) ─────────────────────
     info_base: dict = {
         "latent_names":       meta["latent_names"],
@@ -160,14 +168,6 @@ def main():
         info_base["config"] = meta["config"]
     elif "configs" in meta:
         info_base["configs"] = meta["configs"]
-
-    sequences = list(meta["sequences"])
-    n_frames  = meta["n_frames"]
-    n_total   = len(sequences)
-
-    # Always shuffle so shard contents are not grouped by object.
-    rng = random.Random(args.split_seed)
-    rng.shuffle(sequences)
 
     do_split = args.val_fraction > 0.0 or args.test_fraction > 0.0
 
