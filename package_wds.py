@@ -115,7 +115,7 @@ def main():
                         help="Root directory containing metadata.pkl and seqs/")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write shard tars and dataset_info.json")
-    parser.add_argument("--shard-maxcount", type=int, default=512,
+    parser.add_argument("--shard-maxcount", type=int, default=1000,
                         help="Maximum number of sequences per shard (default: 512)")
     parser.add_argument("--shard-pattern", default="shard-%05d.tar",
                         help="Shard filename pattern (default: shard-%%05d.tar)")
