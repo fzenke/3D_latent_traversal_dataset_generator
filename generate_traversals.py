@@ -146,6 +146,15 @@ parser.add_argument('--render-samples', type=int, default=50,
                     help="Cycles render samples per frame (default: 50). "
                          "Lower values render faster with more noise; "
                          "combine with a denoiser for best quality/speed trade-off.")
+parser.add_argument('--roughness-floor', type=float, default=0.0,
+                    help="Clamp each ShapeNet material's Principled BSDF roughness "
+                         "up to at least this value (0.0 = disabled). Near-mirror "
+                         "materials (low roughness) reflect the randomized floor hue "
+                         "and colored spot, producing a moving mottled/camouflage "
+                         "pattern on reflective objects as they rotate; raising the "
+                         "roughness floor (e.g. 0.5) softens those reflections. "
+                         "Note: this alters material appearance, so keep it fixed "
+                         "across a dataset for consistency.")
 parser.add_argument('--n-frames', type=int, default=32,
                     help="Number of frames per traversal sequence")
 parser.add_argument('--seed', type=int, default=0,
@@ -185,7 +194,7 @@ parser.add_argument('--velocity-momentum', type=float, default=1.0,
                     help="AR(1) momentum for per-frame velocity drift in [0, 1] "
                          "(default: 1.0 = constant velocity, current behaviour). "
                          "Values < 1 slowly change velocities over the sequence; "
-                         "frozen factors (v=0) can also drift when momentum < 1.")
+                         "only non-frozen factors (v != 0) drift, frozen factors stay fixed.")
 parser.add_argument('--seqs-per-object', type=int, default=7,
                     help="[multi-factor] Number of sequences to generate per object "
                          "(default: 7, matching single-factor mode)")
@@ -312,6 +321,10 @@ spot.set_energy(500)
 spot.blender_obj.data.spot_size = np.pi / 8
 
 bproc.renderer.set_max_amount_of_samples(args.render_samples)
+# Clamp bright indirect samples to suppress specular fireflies from the small,
+# intense spot light. Without this, under-sampled glossy highlights get smeared
+# by the denoiser into a moving mottled/camouflage pattern on reflective objects.
+bpy.context.scene.cycles.sample_clamp_indirect = 10.0
 bproc.camera.set_resolution(image_size, image_size)
 
 # Fixed camera
@@ -356,6 +369,7 @@ else:
             'models_path':     args.models_path,
             'objects':         args.objects,
             'render_samples':  args.render_samples,
+            'roughness_floor': args.roughness_floor,
             'multi_factor':    args.multi_factor,
             'freeze_prob':     args.freeze_prob,
             'seqs_per_object': args.seqs_per_object,
@@ -472,6 +486,23 @@ for (synset, obj_id), factors in jobs_by_obj.items():
         bpy.ops.object.mode_set(mode='OBJECT')
         bpy.ops.object.shade_smooth_by_angle(angle=np.radians(60))
         obj.select_set(False)
+
+    # Optionally clamp material roughness up. Low-roughness ShapeNet materials act
+    # as mirrors and reflect the randomized floor hue / colored spot, which sweeps
+    # across the surface as the object rotates and reads as a moving mottled pattern
+    # (persists regardless of sample count). Raising the roughness floor softens
+    # those reflections. Applied to every material on every loaded mesh object.
+    if args.roughness_floor > 0.0:
+        for obj in bpy.context.scene.objects:
+            if obj.type != 'MESH' or obj is floor:
+                continue
+            for mat in bproc.types.MeshObject(obj).get_materials():
+                if mat is None:
+                    continue
+                current = mat.get_principled_shader_value("Roughness")
+                # Only clamp plain scalar roughness; skip texture/node-driven inputs.
+                if isinstance(current, (int, float)) and current < args.roughness_floor:
+                    mat.set_principled_shader_value("Roughness", args.roughness_floor)
 
     vprint(f"  set_location ...", flush=True)
     model_obj.set_location((0, 0, 0))

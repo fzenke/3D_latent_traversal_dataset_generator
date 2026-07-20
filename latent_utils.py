@@ -117,17 +117,18 @@ def build_latents(base_latent, n_frames, velocities,
     """Build the [n_frames, N_FACTORS] latent matrix for one sequence.
 
     For each factor k:
-      velocities[k] == 0  → all frames use base_latent[k]  (unless walk is on)
+      velocities[k] == 0  → all frames use base_latent[k]  (factor stays frozen)
       velocities[k] != 0  → linspace from base_latent[k] by velocity * span;
                              circular factors wrap modulo span,
                              all others reflect elastically off boundaries.
 
-    When velocity_momentum < 1.0 and rng is not None, velocities evolve each
-    frame via an AR(1) random walk:
+    When velocity_momentum < 1.0 and rng is not None, the velocity of each
+    non-frozen factor (v₀ != 0) evolves each frame via an AR(1) random walk:
 
         v_t = momentum · v_{t-1}  +  √(1 − momentum²) · ε_t,   ε_t ~ N(0, 1)
 
-    Noise scale is 1.0 (in velocity units), so frozen factors (v₀=0) can drift.
+    Frozen factors (v₀ == 0) are left untouched at base_latent[k], so factors
+    excluded via --factors or frozen for this sequence never drift.
     Position is integrated step-by-step; boundaries are handled identically to
     the constant-velocity case.  momentum=1.0 (default) recovers the original
     linear behaviour exactly.
@@ -139,6 +140,8 @@ def build_latents(base_latent, n_frames, velocities,
         noise_scale = np.sqrt(1.0 - velocity_momentum ** 2)
         step_frac = 1.0 / max(n_frames - 1, 1)   # one velocity unit = full span
         for k, v0 in enumerate(velocities):
+            if v0 == 0.0:
+                continue          # frozen factor (CLI-excluded or per-seq frozen) → stays at base
             lo, hi = LATENT_RANGES[k]
             span = hi - lo
             v = float(v0)
