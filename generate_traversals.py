@@ -18,6 +18,7 @@ from latent_utils import (  # noqa: F401 — re-exported for the rest of this sc
     LATENT_NAMES, LATENT_RANGES, N_FACTORS, CIRCULAR_FACTORS,
     _seq_seed, make_traversal, sample_velocities, _elastic_bounce, build_latents,
 )
+from material_utils import force_matte_node_tree
 
 
 # ====================================================================
@@ -155,6 +156,78 @@ parser.add_argument('--roughness-floor', type=float, default=0.0,
                          "roughness floor (e.g. 0.5) softens those reflections. "
                          "Note: this alters material appearance, so keep it fixed "
                          "across a dataset for consistency.")
+parser.add_argument('--force-matte', type=float, default=0.0, metavar='ROUGHNESS',
+                    help="Force EVERY ShapeNet material to a matte finish with this "
+                         "roughness (0.0 = disabled; try 0.9). Unlike "
+                         "--roughness-floor, this also zeroes Metallic and Specular "
+                         "and REMOVES any texture/node link driving those sockets — "
+                         "roughness-floor skips node-driven materials entirely, so it "
+                         "misses exactly the glossy ones. Use when glossy finishes "
+                         "reflect the floor/environment and produce moving mottled "
+                         "patterns as objects rotate. Alters appearance, so keep it "
+                         "fixed across a dataset.")
+parser.add_argument('--override-material', action='store_true',
+                    help="Replace EVERY material on the loaded model with a single "
+                         "flat matte grey. Diagnostic: removes all texture and "
+                         "per-face colour variation, so if an artifact survives it "
+                         "cannot come from materials/textures and must be geometry "
+                         "or normals. Destroys appearance — for debugging, not for "
+                         "generating a dataset.")
+parser.add_argument('--shadow-terminator-offset', type=float, default=0.0,
+                    help="Cycles shadow terminator offset per object (0.0 = disabled). "
+                         "Smooth shading on low-poly meshes makes the interpolated "
+                         "shading normal disagree with the geometric normal, so faces "
+                         "self-shadow incorrectly and dark patches appear along exact "
+                         "polygon boundaries, shifting as the light moves. ShapeNet is "
+                         "low-poly and this script smooth-shades it, so this is a "
+                         "likely cause of polygon-shaped shading artifacts. Try 0.1-0.3.")
+parser.add_argument('--transparent-max-bounces', type=int, default=None,
+                    help="Cycles transparent_max_bounces (default: leave Blender's "
+                         "default of 8). ShapeNet materials often carry alpha or "
+                         "transmission, and layered shells stack more transparent "
+                         "surfaces than the limit allows; rays that hit the cap "
+                         "terminate and the patch renders as background, switching on "
+                         "and off as the object rotates. Try 64.")
+parser.add_argument('--no-denoiser', action='store_true',
+                    help="Disable the denoiser. Mainly a diagnostic: if the artifact "
+                         "resolves into fine-grained noise it was a denoiser artifact, "
+                         "whereas solid patches that survive point to geometry or "
+                         "material alpha.")
+parser.add_argument('--smooth-angle', type=float, default=0.0,
+                    help="Angle in degrees for shade_smooth_by_angle on ShapeNet "
+                         "meshes. Default 0 skips the normal handling entirely and "
+                         "keeps ShapeNet's authored vertex normals, which tested as "
+                         "the least-artifact option (forced smoothing worsened the "
+                         "z-fighting shading). A positive value smooths faces meeting "
+                         "below that angle; ~30 is conservative on hard-surface "
+                         "models, 60 smooths across edges meant to stay sharp. Keep "
+                         "this fixed across a dataset for consistent appearance.")
+parser.add_argument('--merge-distance', type=float, default=0.0,
+                    help="Merge mesh vertices closer together than this distance "
+                         "(0.0 = disabled). ShapeNet models often contain duplicated "
+                         "coplanar faces; ray hits then tie on depth and the winner "
+                         "flips as the object rotates, appearing as patches that "
+                         "switch on and off between frames. Merging collapses the "
+                         "duplicates. Try 1e-4.")
+parser.add_argument('--recalc-normals', action='store_true',
+                    help="Recalculate face winding consistently outward before "
+                         "smoothing. Fixes ShapeNet meshes containing inverted faces.")
+parser.add_argument('--spot-radius', type=float, default=None,
+                    help="Spot light radius (shadow_soft_size) in scene units "
+                         "(default: leave at Blender's default). The spot orbits at "
+                         "r=4, so radius R subtends ~2*arctan(R/4): 0.25 -> ~3.6 deg, "
+                         "0.5 -> ~7.2 deg. Larger values spread the emitter's energy "
+                         "over a real solid angle, cutting specular fireflies at the "
+                         "source. Trade-off: softer shadows and highlights weaken the "
+                         "image cues for spot_theta / spot_phi, so do not push it far "
+                         "if those factors must stay recoverable.")
+parser.add_argument('--blur-glossy', type=float, default=None,
+                    help="Cycles Filter Glossy (scene.cycles.blur_glossy) "
+                         "(default: leave at Blender's default of 1.0). Blurs glossy "
+                         "reflections of small bright sources to suppress fireflies. "
+                         "Try 2.0. Costs nothing at render time and does not soften "
+                         "shadows, so it does not erode the lighting cues the way "
+                         "--spot-radius does.")
 parser.add_argument('--n-frames', type=int, default=32,
                     help="Number of frames per traversal sequence")
 parser.add_argument('--seed', type=int, default=0,
@@ -316,15 +389,31 @@ sun.blender_obj.data.angle = np.pi / 2
 # Spot
 spot = bproc.types.Light()
 spot.set_type("SPOT")
-spot.set_location([0, 0, 2])
+# Overwritten every frame by apply_latent (matrix_world); kept consistent with
+# the r=4 sphere the spot actually occupies, at spot_theta=0 (directly overhead).
+spot.set_location([0, 0, 4])
 spot.set_energy(500)
 spot.blender_obj.data.spot_size = np.pi / 8
+if args.spot_radius is not None:
+    spot.blender_obj.data.shadow_soft_size = args.spot_radius
 
 bproc.renderer.set_max_amount_of_samples(args.render_samples)
 # Clamp bright indirect samples to suppress specular fireflies from the small,
 # intense spot light. Without this, under-sampled glossy highlights get smeared
 # by the denoiser into a moving mottled/camouflage pattern on reflective objects.
 bpy.context.scene.cycles.sample_clamp_indirect = 10.0
+if args.blur_glossy is not None:
+    bpy.context.scene.cycles.blur_glossy = args.blur_glossy
+if args.transparent_max_bounces is not None:
+    bpy.context.scene.cycles.transparent_max_bounces = args.transparent_max_bounces
+if args.no_denoiser:
+    bproc.renderer.set_denoiser(None)
+vprint(f"transparent_max_bounces: {bpy.context.scene.cycles.transparent_max_bounces}  |  "
+       f"no_denoiser: {args.no_denoiser}")
+vprint(f"spot_radius:    {spot.blender_obj.data.shadow_soft_size:.4f}  |  "
+       f"blur_glossy: {bpy.context.scene.cycles.blur_glossy:.4f}  (effective values)")
+vprint(f"smooth_angle:   {args.smooth_angle}  |  merge_distance: {args.merge_distance}  |  "
+       f"recalc_normals: {args.recalc_normals}")
 bproc.camera.set_resolution(image_size, image_size)
 
 # Fixed camera
@@ -370,6 +459,18 @@ else:
             'objects':         args.objects,
             'render_samples':  args.render_samples,
             'roughness_floor': args.roughness_floor,
+            'force_matte':     args.force_matte,
+            'override_material': args.override_material,
+            'transparent_max_bounces': int(bpy.context.scene.cycles.transparent_max_bounces),
+            'no_denoiser':     args.no_denoiser,
+            'shadow_terminator_offset': args.shadow_terminator_offset,
+            'smooth_angle':    args.smooth_angle,
+            'merge_distance':  args.merge_distance,
+            'recalc_normals':  args.recalc_normals,
+            # Effective values read back from Blender, so the record is accurate
+            # even when the flags were not passed and defaults applied.
+            'spot_radius':     float(spot.blender_obj.data.shadow_soft_size),
+            'blur_glossy':     float(bpy.context.scene.cycles.blur_glossy),
             'multi_factor':    args.multi_factor,
             'freeze_prob':     args.freeze_prob,
             'seqs_per_object': args.seqs_per_object,
@@ -477,14 +578,25 @@ for (synset, obj_id), factors in jobs_by_obj.items():
     # as custom split normals; these silently override any smooth/flat setting and
     # must be cleared so Blender recomputes normals from the geometry.
     for obj in bpy.context.scene.objects:
-        if obj.type != 'MESH':
+        if obj.type != 'MESH' or obj is floor:
             continue
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
         bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        # remove_doubles / normals_make_consistent act on the selection, so
+        # everything must be selected first or they silently do nothing.
+        bpy.ops.mesh.select_all(action='SELECT')
+        if args.merge_distance > 0.0:
+            bpy.ops.mesh.remove_doubles(threshold=args.merge_distance)
+        if args.recalc_normals:
+            bpy.ops.mesh.normals_make_consistent(inside=False)
+        if args.smooth_angle > 0.0:
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
         bpy.ops.object.mode_set(mode='OBJECT')
-        bpy.ops.object.shade_smooth_by_angle(angle=np.radians(60))
+        if args.smooth_angle > 0.0:
+            bpy.ops.object.shade_smooth_by_angle(angle=np.radians(args.smooth_angle))
+        if args.shadow_terminator_offset > 0.0:
+            obj.cycles.shadow_terminator_offset = args.shadow_terminator_offset
         obj.select_set(False)
 
     # Optionally clamp material roughness up. Low-roughness ShapeNet materials act
@@ -503,6 +615,58 @@ for (synset, obj_id), factors in jobs_by_obj.items():
                 # Only clamp plain scalar roughness; skip texture/node-driven inputs.
                 if isinstance(current, (int, float)) and current < args.roughness_floor:
                     mat.set_principled_shader_value("Roughness", args.roughness_floor)
+
+    # Diagnostic: strip ALL materials down to one flat matte grey. If an artifact
+    # survives this, no texture or per-face colour difference can explain it.
+    if args.override_material:
+        flat = bpy.data.materials.get('_FlatOverride')
+        if flat is None:
+            flat = bpy.data.materials.new('_FlatOverride')
+            flat.use_nodes = True
+            bsdf = next((n for n in flat.node_tree.nodes
+                         if n.type == 'BSDF_PRINCIPLED'), None)
+            if bsdf is not None:
+                bsdf.inputs['Base Color'].default_value = (0.6, 0.6, 0.6, 1.0)
+                force_matte_node_tree(flat.node_tree, 0.9)
+        n_over = 0
+        for obj in bpy.context.scene.objects:
+            if obj.type != 'MESH' or obj is floor:
+                continue
+            obj.data.materials.clear()
+            obj.data.materials.append(flat)
+            n_over += 1
+        vprint(f"  override-material: flat grey applied to {n_over} mesh objects",
+               flush=True)
+
+    # Force every material matte. Stronger than --roughness-floor: it cuts links
+    # driving Roughness/Metallic/Specular, so texture-driven glossy materials
+    # (which roughness-floor skips) are caught too.
+    if args.force_matte > 0.0:
+        n_mats = n_cut = 0
+        for obj in bpy.context.scene.objects:
+            if obj.type != 'MESH' or obj is floor:
+                continue
+            for mat in bproc.types.MeshObject(obj).get_materials():
+                if mat is None:
+                    continue
+                bpy_mat = mat.blender_obj
+                if not getattr(bpy_mat, 'use_nodes', False) or bpy_mat.node_tree is None:
+                    continue
+                changed, cut = force_matte_node_tree(bpy_mat.node_tree,
+                                                     args.force_matte)
+                n_mats += changed
+                n_cut += cut
+        vprint(f"  force-matte: {n_mats} materials -> roughness="
+               f"{args.force_matte}, {n_cut} driving links cut", flush=True)
+
+    # If ShapeNet loaded this model as several mesh objects, only model_obj is
+    # posed below — any sibling meshes stay fixed while it rotates.
+    _mesh_objs = [o for o in bpy.context.scene.objects
+                  if o.type == 'MESH' and o is not floor]
+    if len(_mesh_objs) > 1:
+        print(f"  WARNING: {len(_mesh_objs)} mesh objects loaded for "
+              f"{synset}/{obj_id}; only the one returned by load_shapenet is posed. "
+              f"Static parts will interpenetrate the rotating one.")
 
     vprint(f"  set_location ...", flush=True)
     model_obj.set_location((0, 0, 0))
@@ -578,7 +742,9 @@ for (synset, obj_id), factors in jobs_by_obj.items():
                        f"(v={v:+.3f})")
 
             os.makedirs(seq_dir, exist_ok=True)
-            bpy_obj = bpy.context.visible_objects[-1]
+            # Use model_obj (as set_origin/set_location above do) rather than
+            # positional lookup into visible_objects, which is order-dependent.
+            bpy_obj = model_obj.blender_obj
             t_seq = time.time()
             for t in range(n_frames):
                 angles, location = apply_latent(latents[t], floor, spot)
