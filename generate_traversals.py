@@ -224,6 +224,21 @@ parser.add_argument('--merge-distance', type=float, default=0.0,
 parser.add_argument('--recalc-normals', action='store_true',
                     help="Recalculate face winding consistently outward before "
                          "smoothing. Fixes ShapeNet meshes containing inverted faces.")
+parser.add_argument('--cpu-threads', type=int, default=None, metavar='N',
+                    help="Blender render threads. Default: read SLURM_CPUS_PER_TASK "
+                         "and pin to it, else leave Blender's AUTO. AUTO means 'every "
+                         "core the OS reports', which on a SLURM node is the WHOLE "
+                         "node, not your allocation — Blender's detection ignores the "
+                         "cgroup limit, so a --cpus-per-task=2 job spawns ~40-80 "
+                         "threads that time-slice on 2 cores. Pass 0 to force AUTO, "
+                         "or N to pin explicitly.")
+parser.add_argument('--gpu-only', action='store_true',
+                    help="Disable the CPU compute device so Cycles renders on GPU "
+                         "alone. By default BlenderProc enables both, so a CPU "
+                         "throttled to a couple of allocated cores is handed a share "
+                         "of a job a V100 is doing far faster. Cycles balances "
+                         "dynamically, so expect a modest gain from lower scheduling "
+                         "and memory overhead rather than a large one.")
 parser.add_argument('--dedupe-faces', dest='dedupe_faces', action='store_true',
                     default=True,
                     help="ON BY DEFAULT. Delete faces that repeat an earlier face's "
@@ -445,6 +460,49 @@ spot.blender_obj.data.spot_size = np.pi / 8
 if args.spot_radius is not None:
     spot.blender_obj.data.shadow_soft_size = args.spot_radius
 
+# ── Render threads and compute devices ───────────────────────────────────────
+# Must run after bproc.init(), which is what selects and enables the devices.
+if args.cpu_threads is None:
+    # SLURM_CPUS_PER_TASK is the allocation; Blender cannot see it on its own.
+    slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
+    n_threads = int(slurm_cpus) if slurm_cpus and slurm_cpus.isdigit() else 0
+else:
+    n_threads = args.cpu_threads
+if n_threads > 0:
+    bpy.context.scene.render.threads_mode = 'FIXED'
+    bpy.context.scene.render.threads = n_threads
+else:
+    bpy.context.scene.render.threads_mode = 'AUTO'
+
+if args.gpu_only:
+    prefs = bpy.context.preferences.addons['cycles'].preferences
+    # get_devices() was renamed; either populates the device list.
+    try:
+        prefs.refresh_devices()
+    except AttributeError:
+        prefs.get_devices()
+    n_off = 0
+    for dev in prefs.devices:
+        if dev.type == 'CPU' and dev.use:
+            dev.use = False
+            n_off += 1
+    bpy.context.scene.cycles.device = 'GPU'
+    vprint(f"gpu-only: disabled {n_off} CPU compute device(s)")
+
+_devs = []
+try:
+    for dev in bpy.context.preferences.addons['cycles'].preferences.devices:
+        if dev.use:
+            _devs.append(f"{dev.name.strip()} [{dev.type}]")
+except (KeyError, AttributeError):
+    _devs = ['<unavailable>']
+vprint(f"threads:        {bpy.context.scene.render.threads} "
+       f"(mode={bpy.context.scene.render.threads_mode}"
+       + (f", from SLURM_CPUS_PER_TASK" if args.cpu_threads is None and n_threads
+          else "") + ")")
+vprint(f"cycles.device:  {bpy.context.scene.cycles.device}  |  enabled: "
+       + ("; ".join(_devs) if _devs else "none"))
+
 bproc.renderer.set_max_amount_of_samples(args.render_samples)
 # Clamp bright indirect samples to suppress specular fireflies from the small,
 # intense spot light. Without this, under-sampled glossy highlights get smeared
@@ -525,6 +583,10 @@ else:
             'merge_distance':  args.merge_distance,
             'recalc_normals':  args.recalc_normals,
             'dedupe_faces':    args.dedupe_faces,
+            'cpu_threads':     int(bpy.context.scene.render.threads),
+            'threads_mode':    str(bpy.context.scene.render.threads_mode),
+            'gpu_only':        args.gpu_only,
+            'cycles_device':   str(bpy.context.scene.cycles.device),
             'solidify':        args.solidify,
             'solidify_offset': args.solidify_offset,
             # Effective values read back from Blender, so the record is accurate
