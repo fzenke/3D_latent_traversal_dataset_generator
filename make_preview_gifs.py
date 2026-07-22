@@ -177,7 +177,7 @@ def main():
                              "directory tree containing seq_* dirs")
     parser.add_argument('--out-dir', required=True,
                         help="Target directory for the .gif files")
-    parser.add_argument('--fps', type=float, default=20.0,
+    parser.add_argument('--fps', type=float, default=16.0,
                         help="Playback frames per second (default: 20)")
     parser.add_argument('--loop', type=int, default=0,
                         help="GIF loop count; 0 = forever (default: 0)")
