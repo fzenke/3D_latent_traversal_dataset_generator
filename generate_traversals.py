@@ -6,6 +6,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import argparse
 import bpy
+import bmesh
 from mathutils import Matrix, Euler
 import numpy as np
 import cv2
@@ -19,6 +20,7 @@ from latent_utils import (  # noqa: F401 — re-exported for the rest of this sc
     _seq_seed, make_traversal, sample_velocities, _elastic_bounce, build_latents,
 )
 from material_utils import force_matte_node_tree
+from mesh_utils import duplicate_face_indices, euler_face_budget
 
 
 # ====================================================================
@@ -202,6 +204,16 @@ parser.add_argument('--smooth-angle', type=float, default=0.0,
                          "below that angle; ~30 is conservative on hard-surface "
                          "models, 60 smooths across edges meant to stay sharp. Keep "
                          "this fixed across a dataset for consistent appearance.")
+parser.add_argument('--flat-shading', action='store_true',
+                    help="Force flat shading on every ShapeNet mesh. NOTE this is not "
+                         "the same as --smooth-angle 0: that value skips normal "
+                         "handling altogether and leaves ShapeNet's authored vertex "
+                         "normals (vn) in place as custom split normals, which shade "
+                         "smooth. This flag clears those normals and calls shade_flat, "
+                         "so every face is lit by its true geometric normal. On "
+                         "low-poly hard-surface models that removes the dark "
+                         "interpolated gradients smearing across flat faces; the cost "
+                         "is visible faceting on surfaces meant to read as curved.")
 parser.add_argument('--merge-distance', type=float, default=0.0,
                     help="Merge mesh vertices closer together than this distance "
                          "(0.0 = disabled). ShapeNet models often contain duplicated "
@@ -212,6 +224,42 @@ parser.add_argument('--merge-distance', type=float, default=0.0,
 parser.add_argument('--recalc-normals', action='store_true',
                     help="Recalculate face winding consistently outward before "
                          "smoothing. Fixes ShapeNet meshes containing inverted faces.")
+parser.add_argument('--dedupe-faces', dest='dedupe_faces', action='store_true',
+                    default=True,
+                    help="ON BY DEFAULT. Delete faces that repeat an earlier face's "
+                         "vertex set. "
+                         "ShapeNet meshes commonly carry duplicate faces built on the "
+                         "SAME vertices (a cup here: 270 verts, 968 faces, where Euler "
+                         "caps a genus-1 triangle surface near 540). Those duplicates "
+                         "are invisible to --merge-distance, which finds no duplicate "
+                         "vertices to weld, and to --solidify, which offsets both "
+                         "copies together. Ray hits then tie on depth and the winner "
+                         "flips as the object rotates, giving patches that switch on "
+                         "and off. Matching ignores winding order, so reversed-winding "
+                         "duplicates are caught too. This is a strict repair — a "
+                         "duplicate vertex set is never legitimate geometry — and it "
+                         "removes nothing from a clean mesh, so it defaults on.")
+parser.add_argument('--no-dedupe-faces', dest='dedupe_faces', action='store_false',
+                    help="Disable the duplicate-face repair. Only for reproducing "
+                         "renders made before it became the default; it reintroduces "
+                         "the z-fighting artifact on doubled ShapeNet meshes.")
+parser.add_argument('--solidify', type=float, default=0.0, metavar='THICKNESS',
+                    help="Add a Solidify modifier of this thickness to every ShapeNet "
+                         "mesh (0.0 = disabled). Many ShapeNet models are zero-"
+                         "thickness shells; giving them thickness can pull coincident "
+                         "faces apart so the ray tracer no longer ties on depth. Only "
+                         "works when the coincident faces have OPPOSING normals — a "
+                         "plain duplicated shell offsets in the same direction by the "
+                         "same amount and stays coincident. Thickness is in Blender "
+                         "units on the normalized model (~1 unit tall), so try 0.002. "
+                         "Pair with --recalc-normals: solidify on inconsistent winding "
+                         "produces garbage. Changes the silhouette, so it is a "
+                         "diagnostic first and a dataset setting only if it works.")
+parser.add_argument('--solidify-offset', type=float, default=-1.0,
+                    help="Solidify offset: -1 grows inward (default, preserves the "
+                         "silhouette), +1 outward, 0 splits evenly about the original "
+                         "surface. 0 displaces BOTH sides and so is the variant most "
+                         "likely to break a coincident-face tie.")
 parser.add_argument('--spot-radius', type=float, default=None,
                     help="Spot light radius (shadow_soft_size) in scene units "
                          "(default: leave at Blender's default). The spot orbits at "
@@ -412,8 +460,16 @@ vprint(f"transparent_max_bounces: {bpy.context.scene.cycles.transparent_max_boun
        f"no_denoiser: {args.no_denoiser}")
 vprint(f"spot_radius:    {spot.blender_obj.data.shadow_soft_size:.4f}  |  "
        f"blur_glossy: {bpy.context.scene.cycles.blur_glossy:.4f}  (effective values)")
-vprint(f"smooth_angle:   {args.smooth_angle}  |  merge_distance: {args.merge_distance}  |  "
-       f"recalc_normals: {args.recalc_normals}")
+vprint(f"smooth_angle:   {args.smooth_angle}  |  flat_shading: {args.flat_shading}  |  "
+       f"merge_distance: {args.merge_distance}  |  recalc_normals: {args.recalc_normals}")
+vprint(f"solidify:       {args.solidify}  |  solidify_offset: {args.solidify_offset}  "
+       f"|  dedupe_faces: {args.dedupe_faces}")
+if args.solidify > 0.0 and not args.recalc_normals:
+    print("WARNING: --solidify without --recalc-normals; ShapeNet's inconsistent "
+          "face winding will make the shell extrude inward on some faces.", flush=True)
+if args.flat_shading and args.smooth_angle > 0.0:
+    print("WARNING: --flat-shading overrides --smooth-angle "
+          f"{args.smooth_angle}; meshes will be shaded flat.", flush=True)
 bproc.camera.set_resolution(image_size, image_size)
 
 # Fixed camera
@@ -465,8 +521,12 @@ else:
             'no_denoiser':     args.no_denoiser,
             'shadow_terminator_offset': args.shadow_terminator_offset,
             'smooth_angle':    args.smooth_angle,
+            'flat_shading':    args.flat_shading,
             'merge_distance':  args.merge_distance,
             'recalc_normals':  args.recalc_normals,
+            'dedupe_faces':    args.dedupe_faces,
+            'solidify':        args.solidify,
+            'solidify_offset': args.solidify_offset,
             # Effective values read back from Blender, so the record is accurate
             # even when the flags were not passed and defaults applied.
             'spot_radius':     float(spot.blender_obj.data.shadow_soft_size),
@@ -582,6 +642,9 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             continue
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
+        # Read in OBJECT mode, before anything touches the mesh.
+        had_split = getattr(obj.data, 'has_custom_normals', None)
+        n_verts0, n_faces0 = len(obj.data.vertices), len(obj.data.polygons)
         bpy.ops.object.mode_set(mode='EDIT')
         # remove_doubles / normals_make_consistent act on the selection, so
         # everything must be selected first or they silently do nothing.
@@ -590,11 +653,71 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             bpy.ops.mesh.remove_doubles(threshold=args.merge_distance)
         if args.recalc_normals:
             bpy.ops.mesh.normals_make_consistent(inside=False)
-        if args.smooth_angle > 0.0:
-            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        # Both shading paths need the authored vn normals gone first, otherwise
+        # the custom split normals win and shade_flat / shade_smooth_by_angle
+        # silently change nothing.
+        if args.smooth_angle > 0.0 or args.flat_shading:
+            # The operator's poll fails outright when the mesh carries no custom
+            # normal layer, which raises rather than no-ops. That is a normal
+            # state, not an error, so report it instead of aborting the render.
+            try:
+                bpy.ops.mesh.customdata_custom_splitnormals_clear()
+            except RuntimeError as e:
+                vprint(f"  split-normals clear skipped on '{obj.name}': {e}",
+                       flush=True)
         bpy.ops.object.mode_set(mode='OBJECT')
-        if args.smooth_angle > 0.0:
+        if args.flat_shading:
+            bpy.ops.object.shade_flat()
+        elif args.smooth_angle > 0.0:
             bpy.ops.object.shade_smooth_by_angle(angle=np.radians(args.smooth_angle))
+        if args.dedupe_faces:
+            # Must run in OBJECT mode: bmesh reads the evaluated mesh datablock.
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.faces.ensure_lookup_table()
+            dupes = duplicate_face_indices(
+                [[v.index for v in f.verts] for f in bm.faces])
+            if dupes:
+                # FACES_ONLY deletes the faces but keeps their verts and edges,
+                # which is essential here: the duplicates share vertices with the
+                # copy we are keeping, so deleting verts would punch holes.
+                bmesh.ops.delete(bm, geom=[bm.faces[i] for i in dupes],
+                                 context='FACES_ONLY')
+                bm.to_mesh(obj.data)
+                obj.data.update()
+            bm.free()
+            budget = euler_face_budget(len(obj.data.vertices), genus=1)
+            vprint(f"  dedupe-faces '{obj.name}': removed {len(dupes)} duplicate "
+                   f"faces, {n_faces0} -> {len(obj.data.polygons)} "
+                   f"(genus-1 budget for {len(obj.data.vertices)} verts: ~{budget})",
+                   flush=True)
+        if args.merge_distance > 0.0:
+            # Counts are only accurate back in OBJECT mode. A face count that
+            # does not drop means the weld found no duplicate vertices within
+            # the threshold, so the coincident faces are NOT vertex-coincident
+            # and merging can never be the fix — raise the threshold or stop.
+            dv = n_verts0 - len(obj.data.vertices)
+            df = n_faces0 - len(obj.data.polygons)
+            vprint(f"  merge '{obj.name}': verts {n_verts0} -> "
+                   f"{len(obj.data.vertices)} (-{dv}), faces {n_faces0} -> "
+                   f"{len(obj.data.polygons)} (-{df})", flush=True)
+        if args.smooth_angle > 0.0 or args.flat_shading:
+            # Proof the clear did something: had_split must go True -> False.
+            # If it reads False before the clear, ShapeNet's vn normals were
+            # never imported as a custom layer and split normals were never the
+            # mechanism to begin with.
+            vprint(f"  shading '{obj.name}': has_custom_normals "
+                   f"{had_split} -> {getattr(obj.data, 'has_custom_normals', None)}"
+                   f"  |  flat={args.flat_shading}", flush=True)
+        if args.solidify > 0.0:
+            # Left as a live modifier rather than applied: Cycles evaluates it at
+            # render time, and keeping it unapplied means the base mesh (and the
+            # bounding box already used for centering) stays untouched.
+            mod = obj.modifiers.new(name="Solidify_Fix", type='SOLIDIFY')
+            mod.thickness = args.solidify
+            mod.offset = args.solidify_offset
+            vprint(f"  solidify '{obj.name}': thickness={args.solidify} "
+                   f"offset={args.solidify_offset}", flush=True)
         if args.shadow_terminator_offset > 0.0:
             obj.cycles.shadow_terminator_offset = args.shadow_terminator_offset
         obj.select_set(False)
