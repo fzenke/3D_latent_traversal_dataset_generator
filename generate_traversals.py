@@ -338,6 +338,11 @@ parser.add_argument('--factors', nargs='+', default=None,
                     help="Restrict traversals to these factors only. "
                          "Accepts names (e.g. rot_x rot_z) or indices (0 2). "
                          "Default: all 7 factors.")
+parser.add_argument('--always-frozen-factors', nargs='+', default=None,
+                    help="Factors that get a randomly-sampled base value per sequence "
+                         "but are always held frozen (velocity=0). Useful for "
+                         "per-sequence-static-but-varied backgrounds. "
+                         "Accepts names or indices. Must be disjoint from --factors.")
 parser.add_argument('--verbose', '-v', action='store_true', default=False,
                     help="Print per-object and per-sequence debug info including "
                          "latent values, directions, and timing")
@@ -361,18 +366,37 @@ def vprint(*a, **kw):
     if args.verbose:
         print(*a, **kw)
 
-if args.factors is not None:
-    active_factors = set()
-    for f in args.factors:
+def _parse_factor_list(raw):
+    out = set()
+    for f in raw:
         if f.lstrip('-').isdigit():
-            active_factors.add(int(f))
+            out.add(int(f))
         else:
             if f not in LATENT_NAMES:
                 raise ValueError(f"Unknown factor name '{f}'. "
                                  f"Valid names: {LATENT_NAMES}")
-            active_factors.add(LATENT_NAMES.index(f))
+            out.add(LATENT_NAMES.index(f))
+    return out
+
+
+# Sweeping factors: random base + may sweep (subject to --freeze-prob).
+if args.factors is not None:
+    sweep_factors = _parse_factor_list(args.factors)
 else:
-    active_factors = set(range(N_FACTORS))
+    sweep_factors = set(range(N_FACTORS))
+
+# Always-frozen factors: random base per sequence, but velocity is always 0.
+frozen_base_factors = (
+    _parse_factor_list(args.always_frozen_factors) if args.always_frozen_factors else set()
+)
+if sweep_factors & frozen_base_factors:
+    raise ValueError(
+        f"--factors and --always-frozen-factors must be disjoint, "
+        f"overlap: {sorted(sweep_factors & frozen_base_factors)}"
+    )
+
+# Factors that should get a *random* base value (instead of the canonical midpoint).
+active_factors = sweep_factors | frozen_base_factors
 
 if args.full_rotation:
     LATENT_RANGES[:3] = np.array([[-np.pi, np.pi]] * 3)
@@ -596,10 +620,12 @@ else:
             'multi_factor':    args.multi_factor,
             'freeze_prob':     args.freeze_prob,
             'seqs_per_object': args.seqs_per_object,
-            'velocity_stdev':    args.velocity_stdev,
-            'velocity_dist':     args.velocity_dist,
-            'velocity_momentum': args.velocity_momentum,
-            'active_factors':  sorted(active_factors),
+            'velocity_stdev':      args.velocity_stdev,
+            'velocity_dist':       args.velocity_dist,
+            'velocity_momentum':   args.velocity_momentum,
+            'active_factors':      sorted(active_factors),
+            'sweep_factors':       sorted(sweep_factors),
+            'frozen_base_factors': sorted(frozen_base_factors),
             'random_offset':   args.random_offset,
             'full_rotation':   args.full_rotation,
         },
@@ -879,12 +905,13 @@ for (synset, obj_id), factors in jobs_by_obj.items():
             f"{LATENT_NAMES[k]}={base_latent[k]:.3f}" for k in range(N_FACTORS)
         ))
 
-        # Determine per-factor velocities
+        # Determine per-factor velocities. Only sweep_factors are eligible for non-zero
+        # velocity; frozen_base_factors keep their (randomized) base value across all frames.
         if args.multi_factor:
             velocities = sample_velocities(
                 args.freeze_prob, args.velocity_stdev, args.velocity_dist,
                 args.seed, synset, obj_id, seq_idx,
-                allowed_factors=active_factors,
+                allowed_factors=sweep_factors,
             )
         else:
             # Single-factor mode: seq_idx IS the factor index
