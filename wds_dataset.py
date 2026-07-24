@@ -200,6 +200,9 @@ class TraversalWebDataset:
         self.n_frames      = info.get("n_frames", None)
         self.image_size    = info.get("image_size", None)
         self.n_sequences   = info.get("n_sequences", None)
+        self.synset_list     = info.get("unique_synset_ids", None)
+        if self.synset_list is not None:
+            self.synset_list = sorted(self.synset_list)
 
     # ── pipeline builders ─────────────────────────────────────────────────────
 
@@ -238,6 +241,8 @@ class TraversalWebDataset:
 
     def filter_by_synset(self, synset_id: str, batch_size: int = None) -> wds.WebDataset:
         """Return a pipeline restricted to a single ShapeNet synset."""
+        if self.synset_list is not None and synset_id not in self.synset_list:
+            raise ValueError(f"Synset ID {synset_id} is not in the dataset.")
         pipeline = self._base_pipeline().select(_SynsetFilter(synset_id))
         if batch_size is not None:
             pipeline = pipeline.batched(batch_size, collation_fn=collate_sequences)
