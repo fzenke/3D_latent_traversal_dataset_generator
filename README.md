@@ -227,6 +227,36 @@ The merge script validates that all partial files share the same header (latent 
 
 The generator resumes automatically: any sequence directory that already contains the expected number of frames is skipped. The pickle is updated after each object, so a crash loses at most one object's work.
 
+
+---
+
+## Loading Raw Dataset in PyTorch
+
+```python
+from dataset import TraversalDataset
+from torch.utils.data import DataLoader
+
+ds = TraversalDataset('3D_latent_traversal/metadata.pkl', '3D_latent_traversal')
+
+batch = ds[0]
+# batch['frames']:                FloatTensor  [T, 3, H, W]  — values in [0, 1]
+# batch['latents']:               FloatTensor  [T, 10]
+# batch['base_latent']:           FloatTensor  [10]
+# batch['traversal_velocities']:  FloatTensor  [10]  — 0 = frozen, ±v = sweep speed
+# batch['synset_id']:             str
+# batch['obj_id']:                str
+# batch['traversal_factors']:     list[int]    — indices of varying factors (0–9)
+
+# Filter helpers
+rot_seqs  = ds.filter_by_factor('rot_x')       # or filter_by_factor(0)
+airplanes = ds.filter_by_synset('02691156')
+
+loader = DataLoader(ds, batch_size=8, shuffle=True, num_workers=4)
+```
+
+A custom `transform` (receives a `PIL.Image`, returns a tensor) can be passed to the constructor to plug in any `torchvision` augmentation pipeline.
+
+
 ---
 
 ## Packaging as WebDataset
@@ -352,30 +382,3 @@ Smoke-test a shard directory:
 python wds_dataset.py --shards "./shards/shard-*.tar" --n-batches 3
 ```
 
----
-
-## Loading in PyTorch
-
-```python
-from dataset import TraversalDataset
-from torch.utils.data import DataLoader
-
-ds = TraversalDataset('3D_latent_traversal/metadata.pkl', '3D_latent_traversal')
-
-batch = ds[0]
-# batch['frames']:                FloatTensor  [T, 3, H, W]  — values in [0, 1]
-# batch['latents']:               FloatTensor  [T, 10]
-# batch['base_latent']:           FloatTensor  [10]
-# batch['traversal_velocities']:  FloatTensor  [10]  — 0 = frozen, ±v = sweep speed
-# batch['synset_id']:             str
-# batch['obj_id']:                str
-# batch['traversal_factors']:     list[int]    — indices of varying factors (0–9)
-
-# Filter helpers
-rot_seqs  = ds.filter_by_factor('rot_x')       # or filter_by_factor(0)
-airplanes = ds.filter_by_synset('02691156')
-
-loader = DataLoader(ds, batch_size=8, shuffle=True, num_workers=4)
-```
-
-A custom `transform` (receives a `PIL.Image`, returns a tensor) can be passed to the constructor to plug in any `torchvision` augmentation pipeline.
