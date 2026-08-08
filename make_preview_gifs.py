@@ -20,6 +20,7 @@ import argparse
 import os
 import re
 import sys
+import random
 from collections import Counter
 from multiprocessing import Pool
 
@@ -178,7 +179,7 @@ def main():
     parser.add_argument('--out-dir', required=True,
                         help="Target directory for the .gif files")
     parser.add_argument('--fps', type=float, default=16.0,
-                        help="Playback frames per second (default: 20)")
+                        help="Playback frames per second (default: 16)")
     parser.add_argument('--loop', type=int, default=0,
                         help="GIF loop count; 0 = forever (default: 0)")
     parser.add_argument('--resize', type=int, default=None, metavar='PX',
@@ -213,6 +214,8 @@ def main():
 
     objs = sorted(firsts)
     if args.limit is not None:
+        random.seed(42)
+        random.shuffle(objs)
         objs = objs[:args.limit]
         log(f"Limited to {len(objs)} objects (--limit)")
 
