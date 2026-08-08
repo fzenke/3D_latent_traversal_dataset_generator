@@ -16,8 +16,8 @@ Each scene is described by 10 continuous factors:
 
 | Index | Name | Default Range |
 |---|---|---|
-| 0 | `rot_x` | [−π/6, π/6] |
-| 1 | `rot_y` | [−π/6, π/6] |
+| 0 | `rot_x` | [−π/8, π/8] |
+| 1 | `rot_y` | [−π/8, π/8] |
 | 2 | `rot_z` | [−π, π] |
 | 3 | `floor_hue` | [0, 1] |
 | 4 | `spot_theta` | [0, π/4] |
@@ -28,6 +28,10 @@ Each scene is described by 10 continuous factors:
 | 9 | `trans_z` | [−0.5, 0.5] |
 
 Rotations use Tait-Bryan (XYZ extrinsic) Euler angles. Pass `--full-rotation` to expand all rotation ranges to [−π, π].
+
+**Boundary behaviour.** `rot_z`, `floor_hue`, `spot_phi` and `spot_hue` are circular: a traversal that runs off the end wraps around. Every other factor reflects elastically off its range limits (`latent_utils._elastic_bounce`) — the value turns around and travels back, continuously, with the sign of its instantaneous velocity flipped. Nothing is clipped, so a traversal never stalls at a boundary. Note that `traversal_velocities` therefore records the *initial* velocity only; recover the per-frame velocity from `np.diff(latents, axis=0)`. Under `--velocity-momentum < 1` a factor may bounce several times in one sequence.
+
+`--full-rotation` widens all three rotation axes to [−π, π] **and** marks them circular, so at a full turn `rot_x`, `rot_y` and `rot_z` wrap like the real rotation they represent instead of reflecting at ±π. Without the flag, `rot_x` and `rot_y` cover only [−π/8, π/8], are not periodic over that range, and correctly reflect.
 
 ---
 
@@ -247,6 +251,26 @@ T JPEG frames stored as raw bytes (no re-encode), numpy arrays for latents,
 and a JSON metadata blob. A `dataset_info.json` is written alongside the
 shards so the loader is self-contained (no `metadata.pkl` needed).
 
+### Compressed shards
+
+Despite the frames already being JPEG, gzipping shards is worth roughly a
+factor of two. The saving is not image compression: it comes from tar's
+512-byte block padding (each sequence carries ~36 small members), the ~625-byte
+JPEG header that every frame repeats verbatim, and the highly redundant
+`meta.json` / `velocities.npy` members. Compress **per shard**, never into one
+big archive — that keeps every shard independently downloadable and streamable:
+
+```bash
+python package_wds.py \
+  --dataset-dir ./3D_latent_traversal \
+  --output-dir  ./3D_latent_traversal_wds \
+  --shard-pattern "shard-%05d.tar.gz"
+```
+
+`webdataset` reads `.tar.gz` shards natively, so no loader change is needed;
+decompression runs at roughly 350 MB/s per core, well below JPEG decode cost.
+Inspect them with `tar tzf` rather than `tar tf`.
+
 Pass `--split train` to prefix shard names (e.g. `train-shard-00000.tar`).
 
 **To produce a train / val / test split**, pass any combination of `--val-fraction` and `--test-fraction`:
@@ -260,7 +284,41 @@ python package_wds.py \
   --split-seed 42
 ```
 
-Only the subdirectories that receive sequences are created (`train/`, `val/`, `test/`). Each contains its own shards and `dataset_info.json`. The split is a random shuffle of sequences using `--split-seed` for reproducibility. Constraint: `val-fraction + test-fraction < 1`.
+Only the subdirectories that receive sequences are created (`train/`, `val/`, `test/`). Each contains its own shards and `dataset_info.json`. Constraint: `val-fraction + test-fraction < 1`.
+
+**Choose what the held-out splits measure** with `--split-by`:
+
+| Mode | Held out | Held-out metrics measure |
+|---|---|---|
+| `sequence` (default) | individual sequences | generalisation to unseen **latent configurations** — every object appears in every split |
+| `object` | whole objects | generalisation to **unseen objects** — no object appears in more than one split |
+
+```bash
+python package_wds.py \
+  --dataset-dir ./3D_latent_traversal \
+  --output-dir  ./3D_latent_traversal_wds \
+  --val-fraction 0.1 \
+  --test-fraction 0.1 \
+  --split-by object
+```
+
+The object split is stratified per synset, so every category is represented in every split as long as it has enough objects; a category too small to populate all three splits keeps its objects in `train` and prints a warning. Because objects are indivisible, realised split sizes only approximate the requested fractions.
+
+Both modes shuffle sequences within each split, so shard contents are never grouped by object, and both are reproducible via `--split-seed`.
+
+**Which objects went where.** Packing prints the held-out objects for `val` and `test`, and every `dataset_info.json` records the split's full membership:
+
+```python
+import json
+info = json.load(open('3D_latent_traversal_wds/test/dataset_info.json'))
+
+info['split_by']     # 'object' or 'sequence'
+info['split_seed']   # reproduces the partition
+info['n_objects']    # objects in this split
+info['objects']      # {synset_id: [obj_id, ...]} — exactly which ones
+```
+
+so a packaged dataset states both which kind of split it carries and what is in it, without anyone having to scan the tars.
 
 ### Load in PyTorch
 

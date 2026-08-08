@@ -13,8 +13,8 @@ LATENT_NAMES = ['rot_x', 'rot_y', 'rot_z', 'floor_hue',
                 'spot_theta', 'spot_phi', 'spot_hue',
                 'trans_x', 'trans_y', 'trans_z']
 LATENT_RANGES = np.array([
-    [-np.pi / 6, np.pi / 6],  # rot_x
-    [-np.pi / 6, np.pi / 6],  # rot_y
+    [-np.pi / 8, np.pi / 8],  # rot_x
+    [-np.pi / 8, np.pi / 8],  # rot_y
     [-np.pi, np.pi],           # rot_z
     [0.0, 1.0],                # floor_hue
     [0.0, np.pi / 4],          # spot_theta
@@ -29,8 +29,33 @@ N_FACTORS = len(LATENT_NAMES)
 
 # Factors whose values wrap around (hue circle, azimuth angle, full rotation).
 # These always use endpoint=False so the sequence tiles without duplicating
-# the boundary frame.
+# the boundary frame.  Every other factor reflects off its range limits
+# instead (see _elastic_bounce).
+#
+# Mutated in place by enable_full_rotation(); read it, do not copy it at
+# import time, or you will miss that update.
 CIRCULAR_FACTORS = {2, 3, 5, 6}  # rot_z, floor_hue, spot_phi, spot_hue
+
+# rot_x, rot_y, rot_z — the factors enable_full_rotation() widens.
+ROTATION_FACTORS = (0, 1, 2)
+
+
+def enable_full_rotation():
+    """Widen all three rotation axes to [-π, π] and make them circular.
+
+    Both halves matter and belong together: at a full turn the rotation
+    factors are genuinely periodic, so a traversal that runs off the end
+    should carry on round rather than reflect. Widening the range without
+    also marking the axes circular leaves rot_x/rot_y reversing mid-sequence
+    at ±π — a discontinuity in the *motion* where the geometry has none.
+
+    Mutates LATENT_RANGES and CIRCULAR_FACTORS in place, so callers that
+    imported either name still see the change.
+    """
+    LATENT_RANGES[list(ROTATION_FACTORS)] = np.array(
+        [[-np.pi, np.pi]] * len(ROTATION_FACTORS))
+    CIRCULAR_FACTORS.update(ROTATION_FACTORS)
+    return CIRCULAR_FACTORS
 
 
 def _seq_seed(*parts):
@@ -74,8 +99,13 @@ def sample_velocities(freeze_prob, velocity_stdev, velocity_dist, global_seed, s
 
     Returns a float32 array of shape [N_FACTORS]:
       0.0   → factor is frozen at its base value
-      ±v    → factor sweeps v * span from base_latent in that direction,
-               clipped at range boundaries (wrapped for circular factors)
+      ±v    → factor sweeps v * span from base_latent in that direction.
+               This is the *initial* velocity only: circular factors wrap at
+               the range boundary, all others reflect off it (see
+               _elastic_bounce), which flips the sign of the instantaneous
+               velocity for the rest of the sequence.  At |v| = 1 a bounce is
+               the norm rather than the exception, since a full-span sweep
+               from any interior start point must reach a boundary.
 
     When velocity_stdev == 0: active factors get ±1.0 (full range sweep).
     When velocity_stdev > 0 and velocity_dist == 'gaussian': N(0, velocity_stdev).

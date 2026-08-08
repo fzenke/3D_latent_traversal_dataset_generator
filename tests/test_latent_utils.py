@@ -5,9 +5,11 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import latent_utils
 from latent_utils import (
     LATENT_NAMES, LATENT_RANGES, N_FACTORS, CIRCULAR_FACTORS,
     _seq_seed, _elastic_bounce, build_latents, sample_velocities,
+    enable_full_rotation, ROTATION_FACTORS,
 )
 
 
@@ -177,3 +179,56 @@ def test_sample_velocities_gaussian_shape():
     v = sample_velocities(0.5, 1.0, 'gaussian', 0, 'syn', 'obj', 0)
     assert v.shape == (N_FACTORS,)
     assert v.dtype == np.float32
+
+
+# ── enable_full_rotation ─────────────────────────────────────────────────────
+# Mutates module globals in place, so each test snapshots and restores them.
+
+@pytest.fixture
+def restore_full_rotation():
+    ranges = latent_utils.LATENT_RANGES.copy()
+    circular = set(latent_utils.CIRCULAR_FACTORS)
+    yield
+    latent_utils.LATENT_RANGES[:] = ranges
+    latent_utils.CIRCULAR_FACTORS.clear()
+    latent_utils.CIRCULAR_FACTORS.update(circular)
+
+
+def test_enable_full_rotation_widens_all_axes(restore_full_rotation):
+    enable_full_rotation()
+    for k in ROTATION_FACTORS:
+        lo, hi = latent_utils.LATENT_RANGES[k]
+        assert lo == pytest.approx(-np.pi)
+        assert hi == pytest.approx(np.pi)
+
+
+def test_enable_full_rotation_marks_axes_circular(restore_full_rotation):
+    enable_full_rotation()
+    assert set(ROTATION_FACTORS) <= latent_utils.CIRCULAR_FACTORS
+
+
+def test_enable_full_rotation_mutates_in_place(restore_full_rotation):
+    # Callers that imported the names by reference must see the update.
+    ranges_ref = latent_utils.LATENT_RANGES
+    circular_ref = latent_utils.CIRCULAR_FACTORS
+    enable_full_rotation()
+    assert latent_utils.LATENT_RANGES is ranges_ref
+    assert latent_utils.CIRCULAR_FACTORS is circular_ref
+    assert 0 in circular_ref and 1 in circular_ref
+
+
+def test_enable_full_rotation_makes_rot_x_wrap(restore_full_rotation):
+    # Before: rot_x reflects off its boundary. After: it wraps.
+    enable_full_rotation()
+    lo, hi = latent_utils.LATENT_RANGES[0]
+    span = hi - lo
+    base = np.array([(l + h) / 2 for l, h in latent_utils.LATENT_RANGES])
+    base[0] = hi - 0.05 * span          # start just below the upper edge
+    v = np.zeros(N_FACTORS, dtype=np.float32)
+    v[0] = 1.0                          # full-span forward sweep, will cross +π
+    traj = build_latents(base, 32, v)[:, 0]
+    assert (traj >= lo - 1e-9).all() and (traj <= hi + 1e-9).all()
+    # Wrapping means the value keeps advancing (mod span) rather than turning
+    # back: over a full-span sweep it should visit both halves of the range.
+    assert traj.min() < lo + 0.25 * span
+    assert traj.max() > hi - 0.25 * span

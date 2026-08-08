@@ -18,6 +18,7 @@ import time
 from latent_utils import (  # noqa: F401 — re-exported for the rest of this script
     LATENT_NAMES, LATENT_RANGES, N_FACTORS, CIRCULAR_FACTORS,
     _seq_seed, make_traversal, sample_velocities, _elastic_bounce, build_latents,
+    enable_full_rotation,
 )
 from material_utils import force_matte_node_tree
 from mesh_utils import duplicate_face_indices, euler_face_budget
@@ -303,8 +304,8 @@ parser.add_argument('--metadata-name', default='metadata',
                     help="Base name for the metadata pickle file, without .pkl "
                          "(default: metadata). Use e.g. metadata_000 for parallel jobs.")
 parser.add_argument('--full-rotation', action='store_true', default=False,
-                    help="Extend rotation range to [-π, π] (360°) instead of "
-                         "[-π/2, π/2] (180°, default)")
+                    help="Extend all three rotation axes to [-π, π] (360°) and "
+                         "make them wrap at the boundary instead of reflecting")
 parser.add_argument('--random-offset', action='store_true', default=False,
                     help="Start each traversal at a random phase within the factor "
                          "range rather than always at the minimum value")
@@ -375,7 +376,9 @@ else:
     active_factors = set(range(N_FACTORS))
 
 if args.full_rotation:
-    LATENT_RANGES[:3] = np.array([[-np.pi, np.pi]] * 3)
+    # Widen rot_x/rot_y/rot_z to a full turn AND mark them circular, so those
+    # sweeps wrap instead of reflecting at ±π.
+    enable_full_rotation()
 
 np.random.seed(args.seed)
 
