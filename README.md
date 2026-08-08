@@ -8,6 +8,19 @@ Generates latent traversals of 3D objects for studying **invariance and equivari
 
 Built on [BlenderProc](https://github.com/DLR-RM/BlenderProc) and [ShapeNet Core V2](https://shapenet.org/).
 
+## Example traversals
+
+<p align="center">
+  <img src="examples/02691156_10155655850468db78d106ce0a280f87.gif" width="12%" alt="airplane" />
+  <img src="examples/02954340_13295f09e0e9e5d4a6e67635b9d1cee5.gif" width="12%" alt="cap" />
+  <img src="examples/02958343_10247b51a42b41603ffe0e5069bf1eb5.gif" width="12%" alt="car" />
+  <img src="examples/03001627_1013f70851210a618f2e765c4a8ed3d.gif" width="12%" alt="chair" />
+  <img src="examples/03261776_1d4f9c324d6388a9b904f4192b538029.gif" width="12%" alt="earphone" />
+  <img src="examples/03642806_125c93cbc6544bd1f9f50a550b8c1cce.gif" width="12%" alt="laptop" />
+  <img src="examples/03797390_128ecbc10df5b05d96eaf1340564a4de.gif" width="12%" alt="mug" />
+  <img src="examples/03928116_18d4bd26fc3946c536244e3d0dd95a13.gif" width="12%" alt="piano" />
+</p>
+
 ---
 
 ## Latent Space
